@@ -22,12 +22,10 @@ def show_squeue():
     cmd = ['squeue', '--noheader', '-o', '%i|%P|%j|%u|%T|%M|%D|%R']
     try:
         output = subprocess.check_output(cmd, stderr=subprocess.PIPE, text=True).strip()
-    except FileNotFoundError:
-        raise RuntimeError("Command 'squeue' not found. Please ensure SLURM is installed and added to PATH.")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Error while executing squeue: {e.stderr.strip()}")
-    except Exception as e:
-        raise RuntimeError(f"Unexpected error while executing squeue: {e}")
+    except FileNotFoundError:
+        raise RuntimeError("Command 'squeue' not found. Please ensure SLURM is installed and added to PATH.")
 
     # Parse the output into lines
     lines = output.strip().split('\n')
@@ -93,4 +91,3 @@ def main():
     Main entry point for the `wqueue` command.
     """
     show_squeue()
-
