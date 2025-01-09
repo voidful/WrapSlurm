@@ -4,7 +4,7 @@ import subprocess
 import argparse
 
 
-def find_latest_log(report_dir="./Report"):
+def find_latest_log(report_dir="./slurm-report"):
     """
     Find the latest log file in the specified directory.
     """
@@ -42,7 +42,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description="Watch SLURM log files in real-time.")
     parser.add_argument("job_id", nargs="?", help="SLURM job ID to watch the log file for (optional, defaults to the latest log)")
-    parser.add_argument("--report-dir", default="./Report", help="Directory containing SLURM log files (default: ./Report)")
+    parser.add_argument("--report-dir", default="./slurm-report", help="Directory containing SLURM log files (default: ./slurm-report)")
     args = parser.parse_args()
 
     if args.job_id:
