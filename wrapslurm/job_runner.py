@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-wrun.py
-
-This script handles both interactive (bash) sessions and non-interactive jobs on a SLURM cluster.
-- If the command is "bash" or the user specifies --interactive, it will run "srun" directly with CPU/GPU/memory/time configurations.
-- Otherwise, it will generate an sbatch script and submit it with "sbatch".
-"""
-
 import argparse
 import os
 import subprocess

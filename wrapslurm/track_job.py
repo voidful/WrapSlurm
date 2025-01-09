@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import glob
 import subprocess
@@ -59,6 +58,3 @@ def main():
     # Watch the log file
     watch_log(log_file)
 
-
-if __name__ == "__main__":
-    main()
