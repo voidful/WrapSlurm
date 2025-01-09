@@ -198,11 +198,6 @@ This project is licensed under the [MIT License](LICENSE).
 
 ---
 
-## Support
-
-If you encounter any issues, feel free to open an issue on [GitHub](https://github.com/yourusername/wrapslurm/issues) or contact us at support@example.com.
-
----
 
 ## Acknowledgments
 
