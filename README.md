@@ -6,18 +6,18 @@ WrapSlurm is a powerful and user-friendly wrapper for SLURM job management, desi
 
 ## Features
 
-- **Simplified Job Submission (`wrun`)**:
+- **Simplified Job Submission (`wr`)**:
   - Automatically detect optimal resources (nodes, partitions, CPUs, memory, GPUs) based on the cluster's configuration.
   - Support for interactive and non-interactive SLURM jobs.
   - Customizable SLURM settings like time, tasks per node, and exclusions.
 
-- **Log Monitoring (`wlog`)**:
+- **Log Monitoring (`wl`)**:
   - Watch real-time SLURM logs for specific job IDs or the latest job.
 
-- **Queue Visualization (`wqueue`)**:
+- **Queue Visualization (`wq`)**:
   - View and analyze job queues in a prettified table format with color-coded states.
 
-- **Node Resource Querying (`winfo`)**:
+- **Node Resource Querying (`wi`)**:
   - Display detailed SLURM node information, including memory, CPU, and GPU usage.
 
 ---
@@ -56,28 +56,28 @@ If the scripts `wrun`, `wlog`, `wqueue`, and `winfo` are installed in a director
 Submit a script with auto-detected resources:
 
 ```bash
-wrun ./train_script.py
+wr ./train_script.py
 ```
 
 #### Specify Resources:
 Submit a job with explicit resources:
 
 ```bash
-wrun --nodes 2 --partition gp4d --account ENT212162 --cpus-per-task 8 --memory 200G --gpus 4 ./train_script.py
+wr --nodes 2 --partition gp4d --account ENT212162 --cpus-per-task 8 --memory 200G --gpus 4 ./train_script.py
 ```
 
 #### Interactive Mode:
 Start an interactive session:
 
 ```bash
-wrun
+wr
 ```
 
 #### Full Help:
 View all available options:
 
 ```bash
-wrun --help
+wr --help
 ```
 
 ---
@@ -86,12 +86,12 @@ wrun --help
 
 #### Watch the Latest Log File:
 ```bash
-wlog
+wl
 ```
 
 #### Watch Logs for a Specific Job ID:
 ```bash
-wlog --job-id 12345678
+wl --job-id 12345678
 ```
 
 ---
@@ -124,22 +124,22 @@ winfo --include-down
 
 1. Query available resources:
    ```bash
-   winfo
+   wi
    ```
 
 2. Submit a job:
    ```bash
-   wrun --account ENT212162 --time 2-00:00:00 ./train_script.py
+   wr --account xxxxxx --time 2-00:00:00 ./train_script.py
    ```
 
 3. Monitor job logs:
    ```bash
-   wlog
+   wl
    ```
 
 4. Check the queue:
    ```bash
-   wqueue
+   wq
    ```
 
 ---

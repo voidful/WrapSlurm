@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="WrapSlurm",
-    version="0.0.6",
+    version="0.0.7",
     description="A utility for managing SLURM jobs and nodes with enhanced display features.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
@@ -18,10 +18,10 @@ setup(
     python_requires=">=3.6",
     entry_points={
         "console_scripts": [
-            "winfo = wrapslurm.node_info:main",
-            "wqueue = wrapslurm.queue_info:main",
-            "wrun = wrapslurm.job_runner:main",
-            "wlog = wrapslurm.track_job:main",
+            "wi = wrapslurm.node_info:main",
+            "wq = wrapslurm.queue_info:main",
+            "wr = wrapslurm.job_runner:main",
+            "wl = wrapslurm.track_job:main",
         ],
     },
     classifiers=[
