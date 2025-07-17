@@ -118,7 +118,7 @@ winfo
 winfo --include-down
 ```
 
-#### Display CPU Load Graph:
+#### Display GPU Usage Graph:
 ```bash
 winfo --graph
 ```
