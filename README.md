@@ -118,6 +118,11 @@ winfo
 winfo --include-down
 ```
 
+#### Display GPU Usage Graph:
+```bash
+winfo --graph
+```
+
 ---
 
 ## Example Workflow
