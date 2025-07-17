@@ -118,6 +118,11 @@ winfo
 winfo --include-down
 ```
 
+#### Display CPU Load Graph:
+```bash
+winfo --graph
+```
+
 ---
 
 ## Example Workflow
