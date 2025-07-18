@@ -1,3 +1,4 @@
+import builtins
 import wrapslurm.node_info as ni
 
 SAMPLE_NODE = """NodeName=hgpn02 Arch=x86_64 CoresPerSocket=16
