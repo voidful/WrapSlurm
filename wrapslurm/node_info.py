@@ -68,6 +68,34 @@ def parse_node_data(data):
     cpu_load = float(cpu_load_match.group(1)) if cpu_load_match else 0.0
     cpu_usage_percentage = (cpu_alloc / cpu_total) * 100 if cpu_total > 0 else 0
 
+    # Extract GPU details
+    gpu_total = 0
+    gpu_alloc = 0
+
+    cfg_tres_match = re.search(r"CfgTRES=([^\n]*)", data)
+    if cfg_tres_match:
+        cfg = cfg_tres_match.group(1)
+        m = re.search(r"gres/gpu=(\d+)", cfg)
+        if m:
+            gpu_total = int(m.group(1))
+
+    alloc_tres_match = re.search(r"AllocTRES=([^\n]*)", data)
+    if alloc_tres_match:
+        alloc = alloc_tres_match.group(1)
+        m = re.search(r"gres/gpu=(\d+)", alloc)
+        if m:
+            gpu_alloc = int(m.group(1))
+
+    if gpu_total == 0:
+        gres_match = re.search(r"Gres=\S*?gpu[^:]*:(\d+)", data)
+        if gres_match:
+            gpu_total = int(gres_match.group(1))
+
+    if gpu_alloc == 0:
+        gres_used_match = re.search(r"GresUsed=\S*?gpu:(\d+)", data)
+        if gres_used_match:
+            gpu_alloc = int(gres_used_match.group(1))
+
     # Extract state
     state_match = re.search(r"State=(\S+)", data)
     state = state_match.group(1) if state_match else "UNKNOWN"
@@ -85,6 +113,8 @@ def parse_node_data(data):
         "CPUAlloc": cpu_alloc,
         "CPUTot": cpu_total,
         "CPULoad": cpu_load,
+        "GPUAlloc": gpu_alloc,
+        "GPUTot": gpu_total,
     }
 
 
@@ -106,7 +136,7 @@ def color_state(state):
 def display_nodes(nodes, graph=False):
     """
     Display node information in a table format. If ``graph`` is True, show a
-    simple CPU usage graph with eight slots per node.
+    simple GPU usage graph with one column per GPU.
     """
     if not nodes:
         print("No node information to display.")
@@ -138,14 +168,22 @@ def display_nodes(nodes, graph=False):
 
 
 def display_nodes_graph(nodes, slots=8):
-    """Display nodes with an ASCII CPU usage graph."""
-    titles = ["NodeName"] + [f" #{i+1} " for i in range(slots)] + ["CPUld", "State"]
+    """Display nodes with an ASCII GPU usage graph."""
+    max_slots = max([n.get("GPUTot", 0) for n in nodes] + [slots])
+    titles = ["NodeName"] + [f" #{i+1} " for i in range(max_slots)] + ["CPUld", "State"]
 
     rows = []
     for node in nodes:
-        usage_ratio = node.get("CPUAlloc", 0) / node.get("CPUTot", 1)
-        used = int(round(usage_ratio * slots))
-        bar = ["#" if i < used else " " for i in range(slots)]
+        total = node.get("GPUTot", max_slots)
+        used = min(node.get("GPUAlloc", 0), total)
+        bar = []
+        for i in range(max_slots):
+            if i < used:
+                bar.append("#")
+            elif i < total:
+                bar.append(" ")
+            else:
+                bar.append("")
         rows.append([
             node["NodeName"],
             *bar,
@@ -178,7 +216,7 @@ def main():
     parser.add_argument(
         "--graph",
         action="store_true",
-        help="Display nodes with an ASCII CPU load graph."
+        help="Display nodes with an ASCII GPU usage graph."
     )
     args = parser.parse_args()
 
