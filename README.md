@@ -8,8 +8,9 @@ WrapSlurm is a powerful and user-friendly wrapper for SLURM job management, desi
 
 - **Simplified Job Submission (`wr`)**:
   - Automatically detect optimal resources (nodes, partitions, CPUs, memory, GPUs) based on the cluster's configuration.
-  - Support for interactive and non-interactive SLURM jobs.
-  - Customizable SLURM settings like time, tasks per node, and exclusions.
+  - Friendly summaries before each run highlight auto-detected values and log locations.
+  - Support for interactive and non-interactive SLURM jobs, plus a convenient `--dry-run` preview mode.
+  - Customizable SLURM settings like time, tasks per node, exclusions, job names, and output directories.
 
 - **Log Monitoring (`wl`)**:
   - Watch real-time SLURM logs for specific job IDs or the latest job.
@@ -56,14 +57,22 @@ If the scripts `wrun`, `wlog`, `wqueue`, and `winfo` are installed in a director
 Submit a script with auto-detected resources:
 
 ```bash
-wr ./train_script.py
+wr ./train_script.py --epochs 10
 ```
+
+`wr` now shows a colorized summary of the resources that will be requested, including any values that were auto-detected on your cluster.
 
 #### Specify Resources:
 Submit a job with explicit resources:
 
 ```bash
 wr --nodes 2 --partition gp4d --account ENT212162 --cpus-per-task 8 --memory 200G --gpus 4 ./train_script.py
+```
+
+You can also name the job, change where helper scripts are stored, or choose a custom log directory:
+
+```bash
+wr --job-name my-training --script-dir ./sbatch --report-dir ./logs python train.py
 ```
 
 #### Interactive Mode:
@@ -73,12 +82,22 @@ Start an interactive session:
 wr
 ```
 
+Use `wr --interactive --nodes 2` to override the automatic detection while still launching an interactive shell.
+
 #### Full Help:
 View all available options:
 
 ```bash
 wr --help
 ```
+
+#### Preview the Generated Script:
+
+```bash
+wr --dry-run python train.py
+```
+
+Dry runs print the exact `sbatch` script so you can review the environment setup before submitting.
 
 ---
 
