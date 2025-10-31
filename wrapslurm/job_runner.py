@@ -32,7 +32,7 @@ DEFAULT_SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --time={time}
 #SBATCH -o {report_dir}/%j.out
 #SBATCH -e {report_dir}/%j.err
-{job_name_line}{nodelist_option}{exclude_option}
+
 
 # SLURM Environment Variables
 echo "SLURM_NNODES=${{SLURM_NNODES}}"
