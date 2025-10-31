@@ -24,11 +24,11 @@ def find_latest_log(report_dir="./slurm-report"):
 
 def watch_log(log_file):
     """
-    Watch the specified log file using `watch` and `tail`.
+    Follow the specified log file using ``tail -f``.
     """
     try:
         print(f"Watching log file: {log_file}")
-        subprocess.run(["watch", "tail", "-n", "20", log_file])
+        subprocess.run(["tail", "-n", "20", "-f", log_file])
     except KeyboardInterrupt:
         print("\nStopped watching log.")
     except Exception as e:
@@ -47,7 +47,7 @@ def main():
 
     if args.job_id:
         # Construct the log file path for the specific job ID
-        log_file = os.path.join(args.report_dir, f"{args.job_id}-slurm.out")
+        log_file = os.path.join(args.report_dir, f"{args.job_id}.out")
         if not os.path.exists(log_file):
             print(f"Error: Log file for job ID {args.job_id} not found in {args.report_dir}")
             exit(1)
