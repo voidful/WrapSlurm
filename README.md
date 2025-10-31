@@ -9,6 +9,8 @@ WrapSlurm is a powerful and user-friendly wrapper for SLURM job management, desi
 - **Simplified Job Submission (`wr`)**:
   - Automatically detect optimal resources (nodes, partitions, CPUs, memory, GPUs) based on the cluster's configuration.
   - Friendly summaries before each run highlight auto-detected values and log locations.
+  - Persist preferred defaults (e.g., partition, account, log directory) with `--save-defaults`.
+  - Automatically use the partition's maximum runtime when no explicit `--time` is provided.
   - Support for interactive and non-interactive SLURM jobs, plus a convenient `--dry-run` preview mode.
   - Customizable SLURM settings like time, tasks per node, exclusions, job names, and output directories.
 
@@ -59,8 +61,7 @@ Submit a script with auto-detected resources:
 ```bash
 wr ./train_script.py --epochs 10
 ```
-
-`wr` now shows a colorized summary of the resources that will be requested, including any values that were auto-detected on your cluster.
+`wr` now shows a colorized summary of the resources that will be requested, including values auto-detected from `sinfo` and those loaded from saved defaults.
 
 #### Specify Resources:
 Submit a job with explicit resources:
@@ -84,6 +85,16 @@ wr
 
 Use `wr --interactive --nodes 2` to override the automatic detection while still launching an interactive shell.
 
+#### Save Your Defaults:
+
+You can persist frequently used settings (e.g., partition, account, log directory) so future runs pick them up automatically:
+
+```bash
+wr --save-defaults --partition gp4d --account ENT212162 --report-dir ./slurm-report
+```
+
+Defaults are stored in `~/.config/wrapslurm/defaults.json`. Running `wr --save-defaults` stores the provided flags and exits without submitting a job.
+
 #### Full Help:
 View all available options:
 
@@ -103,6 +114,10 @@ Dry runs print the exact `sbatch` script so you can review the environment setup
 
 ### 2. **Monitor Logs (`wlog`)**
 
+`wlog` streams SLURM output with `tail -n 20 -f` so you can follow job progress without the extra load from `watch`.
+
+Logs are written to `./slurm-report/%j.out` and `./slurm-report/%j.err` by default.
+
 #### Watch the Latest Log File:
 ```bash
 wl
@@ -112,6 +127,8 @@ wl
 ```bash
 wl --job-id 12345678
 ```
+
+To inspect stderr instead, open `./slurm-report/12345678.err` with your preferred tool.
 
 ---
 

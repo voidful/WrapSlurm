@@ -1,12 +1,14 @@
 """User friendly front-end for submitting SLURM jobs."""
 
 import argparse
+import json
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - optional dependency used for rich tables
     from terminaltables import AsciiTable
@@ -28,8 +30,9 @@ DEFAULT_SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --mem={memory}
 #SBATCH --gres=gpu:{gpus}
 #SBATCH --time={time}
-#SBATCH -o {report_dir}/%j-slurm.out
-{job_name_line}{nodelist_option}{exclude_option}
+#SBATCH -o {report_dir}/%j.out
+#SBATCH -e {report_dir}/%j.err
+
 
 # SLURM Environment Variables
 echo "SLURM_NNODES=${{SLURM_NNODES}}"
@@ -47,6 +50,21 @@ export TORCH_DISTRIBUTED_DEBUG=DETAIL
 # Command Execution
 srun --wait=60 --kill-on-bad-exit=1 --mpi=pmix bash -lc {command}
 """
+
+
+DEFAULT_REPORT_DIR = "./slurm-report"
+DEFAULT_SCRIPT_DIR = "./slurm_run"
+DEFAULT_TIME = "4-00:00:00"
+DEFAULT_CONFIG_PATH = os.path.join(
+    os.path.expanduser("~"), ".config", "wrapslurm", "defaults.json"
+)
+
+DEFAULT_FIELD_TYPES: Dict[str, type] = {
+    "nodes": int,
+    "tasks_per_node": int,
+    "cpus_per_task": int,
+    "gpus": int,
+}
 
 
 @dataclass
@@ -68,6 +86,7 @@ class JobConfig:
     job_name: Optional[str] = None
     interactive: bool = False
 
+
     def command_for_display(self) -> str:
         if self.interactive:
             return "Interactive shell"
@@ -81,6 +100,18 @@ class JobConfig:
         command_line = shlex.join(self.command)
         # Quote the entire command so that it is passed as a single argument to bash -lc.
         return shlex.quote(command_line)
+
+
+@dataclass
+class PartitionInfo:
+    """Summary of a partition's resource limits."""
+
+    name: str
+    cpus_per_node: int
+    memory_mb: int
+    memory_display: str
+    gpus: int
+    max_time: Optional[str]
 
 def get_default_account() -> str:
     try:
@@ -97,25 +128,134 @@ def get_default_account() -> str:
     except (subprocess.CalledProcessError, FileNotFoundError):
         raise RuntimeError("Unable to retrieve default SLURM account. Ensure 'sacctmgr' is installed.")
 
-def get_node_resources() -> Tuple[str, int, int, str, int]:
+
+def format_memory(memory_mb: int) -> str:
+    if memory_mb <= 0:
+        return "50G"
+    if memory_mb % 1024 == 0:
+        return f"{memory_mb // 1024}G"
+    if memory_mb > 1024:
+        return f"{memory_mb / 1024:.1f}G"
+    return f"{memory_mb}M"
+
+
+def parse_gpus(gres_field: str) -> int:
+    if not gres_field:
+        return 1
+    for entry in gres_field.split(","):
+        if "gpu" not in entry:
+            continue
+        numbers = re.findall(r"(\d+)", entry)
+        if not numbers:
+            continue
+        try:
+            count = int(numbers[-1])
+            return max(1, count)
+        except ValueError:
+            continue
+    return 1
+
+
+def get_default(defaults: Dict[str, object], key: str) -> Optional[object]:
+    if key not in defaults:
+        return None
+    value = defaults[key]
+    target_type = DEFAULT_FIELD_TYPES.get(key)
+    if target_type is not None and value is not None:
+        try:
+            return target_type(value)
+        except (TypeError, ValueError):
+            print(f"Ignoring stored default for {key!r}: {value!r}")
+            return None
+    return value
+
+
+def load_user_defaults(path: str = DEFAULT_CONFIG_PATH) -> Dict[str, object]:
     try:
-        result = subprocess.check_output(["sinfo", "--format=%P|%N|%C|%m", "--noheader"], text=True).strip()
+        with open(path, "r", encoding="utf-8") as config_file:
+            data = json.load(config_file)
+            if isinstance(data, dict):
+                return data
+            print(f"Ignoring malformed defaults at {path}: expected an object")
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        print(f"Ignoring corrupted defaults file at {path}")
+    return {}
+
+
+def save_user_defaults(updates: Dict[str, object], path: str = DEFAULT_CONFIG_PATH) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    defaults = load_user_defaults(path)
+    defaults.update(updates)
+    with open(path, "w", encoding="utf-8") as config_file:
+        json.dump(defaults, config_file, indent=2)
+    print(f"Saved defaults to {path}")
+
+
+def collect_default_updates(args: argparse.Namespace) -> Dict[str, object]:
+    fields = {
+        "partition",
+        "account",
+        "nodes",
+        "tasks_per_node",
+        "cpus_per_task",
+        "memory",
+        "gpus",
+        "time",
+        "report_dir",
+        "script_dir",
+    }
+    updates: Dict[str, object] = {}
+    for field in fields:
+        value = getattr(args, field, None)
+        if value is not None:
+            updates[field] = value
+    return updates
+
+
+def query_partition_resources() -> Dict[str, PartitionInfo]:
+    try:
+        result = subprocess.check_output(
+            ["sinfo", "--format=%P|%c|%m|%G|%l", "--noheader"], text=True
+        ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         raise RuntimeError("Unable to query SLURM resources. Ensure 'sinfo' is installed.")
 
-    best_partition, best_cpus, best_memory, best_gpus = None, 1, "50G", 1
+    partitions: Dict[str, PartitionInfo] = {}
     for line in result.split("\n"):
-        parts = line.split("|")
-        if len(parts) < 4:
+        if not line.strip():
             continue
-        partition, _, cpu_info, memory = parts[:4]
-        partition = partition.split("*")[0].strip()
-        cpus_total = int(cpu_info.split("/")[-1])
-        memory_mb = int("".join(filter(str.isdigit, memory))) if memory else 0
-        memory_gb = f"{memory_mb // 1024}G" if memory_mb > 0 else "50G"
-        if not best_partition or cpus_total > best_cpus:
-            best_partition, best_cpus, best_memory = partition, cpus_total, memory_gb
-    return best_partition, 1, best_cpus, best_memory, best_gpus
+        parts = line.split("|")
+        if len(parts) < 5:
+            continue
+        partition_name_raw, cpu_info, memory_raw, gres, max_time = parts[:5]
+        partition_name = partition_name_raw.split("*")[0].strip()
+        if not partition_name:
+            continue
+        cpu_pieces = [piece for piece in cpu_info.split("/") if piece]
+        try:
+            cpus_total = int(cpu_pieces[-1]) if cpu_pieces else 1
+        except ValueError:
+            cpus_total = 1
+        memory_digits = "".join(filter(str.isdigit, memory_raw))
+        try:
+            memory_mb = int(memory_digits) if memory_digits else 0
+        except ValueError:
+            memory_mb = 0
+        memory_display = format_memory(memory_mb)
+        gpus = parse_gpus(gres)
+        partition_info = partitions.get(partition_name)
+        if partition_info is None or cpus_total > partition_info.cpus_per_node:
+            partitions[partition_name] = PartitionInfo(
+                name=partition_name,
+                cpus_per_node=cpus_total,
+                memory_mb=memory_mb,
+                memory_display=memory_display,
+                gpus=gpus,
+                max_time=max_time.strip() or None,
+            )
+    return partitions
 
 def build_sbatch_script(config: JobConfig) -> str:
     nodelist_option = f"#SBATCH --nodelist={config.nodelist}\n" if config.nodelist else ""
@@ -158,10 +298,11 @@ def submit_sbatch(script_path: str, report_dir: str) -> None:
         result = subprocess.run(["sbatch", script_path], capture_output=True, text=True, check=True)
         job_id = result.stdout.strip().split()[-1]
         print(f"Job submitted: {result.stdout.strip()}")
-        print(
-            "Monitor logs: watch tail -n 20 "
-            f"{os.path.join(report_dir, f'{job_id}-slurm.out')}"
-        )
+        stdout_log = os.path.join(report_dir, f"{job_id}.out")
+        stderr_log = os.path.join(report_dir, f"{job_id}.err")
+        print(f"Stdout log: {stdout_log}")
+        print(f"Stderr log: {stderr_log}")
+        print(f"Monitor logs: tail -n 20 -f {stdout_log}")
     except subprocess.CalledProcessError as e:
         print(f"Error submitting job: {e.stderr.strip()}")
 
@@ -186,34 +327,55 @@ def run_interactive(config: JobConfig) -> None:
     print(f"Starting interactive session with: {' '.join(srun_cmd)}")
     subprocess.run(srun_cmd)
 
-def highlight_value(value: str, field: str, auto_fields: Iterable[str]) -> str:
+def highlight_value(
+    value: str,
+    field: str,
+    auto_fields: Iterable[str],
+    default_fields: Iterable[str],
+) -> str:
     if field in auto_fields:
         return colored(f"{value} *", "cyan")
+    if field in default_fields:
+        return colored(f"{value} \u2020", "yellow")
     return str(value)
 
 
 def print_job_summary(
     config: JobConfig,
     auto_fields: Iterable[str],
+    default_fields: Iterable[str],
     mode: str,
     script_path: Optional[str] = None,
 ) -> None:
     rows = [
         ("Mode", mode),
-        ("Partition", highlight_value(config.partition, "partition", auto_fields)),
-        ("Account", highlight_value(config.account, "account", auto_fields)),
-        ("Nodes", highlight_value(config.nodes, "nodes", auto_fields)),
+        (
+            "Partition",
+            highlight_value(config.partition, "partition", auto_fields, default_fields),
+        ),
+        ("Account", highlight_value(config.account, "account", auto_fields, default_fields)),
+        ("Nodes", highlight_value(config.nodes, "nodes", auto_fields, default_fields)),
         (
             "Tasks / Node",
-            highlight_value(config.tasks_per_node, "tasks_per_node", auto_fields),
+            highlight_value(
+                config.tasks_per_node,
+                "tasks_per_node",
+                auto_fields,
+                default_fields,
+            ),
         ),
         (
             "CPUs / Task",
-            highlight_value(config.cpus_per_task, "cpus_per_task", auto_fields),
+            highlight_value(
+                config.cpus_per_task,
+                "cpus_per_task",
+                auto_fields,
+                default_fields,
+            ),
         ),
-        ("Memory", highlight_value(config.memory, "memory", auto_fields)),
-        ("GPUs", highlight_value(config.gpus, "gpus", auto_fields)),
-        ("Time", config.time),
+        ("Memory", highlight_value(config.memory, "memory", auto_fields, default_fields)),
+        ("GPUs", highlight_value(config.gpus, "gpus", auto_fields, default_fields)),
+        ("Time", highlight_value(config.time, "time", auto_fields, default_fields)),
         ("Command", config.command_for_display()),
     ]
 
@@ -223,7 +385,9 @@ def print_job_summary(
         rows.append(("Exclude", config.exclude))
     if config.job_name:
         rows.append(("Job Name", config.job_name))
-    rows.append(("Log Dir", config.report_dir))
+    rows.append(
+        ("Log Dir", highlight_value(config.report_dir, "report_dir", auto_fields, default_fields))
+    )
     if script_path:
         rows.append(("Script", script_path))
 
@@ -239,45 +403,108 @@ def print_job_summary(
 
     if auto_fields:
         print(colored("* Automatically detected value", "cyan"))
+    if default_fields:
+        print(colored("† Loaded from saved defaults", "yellow"))
 
 
-def resolve_job_config(args: argparse.Namespace) -> Tuple[JobConfig, List[str]]:
+def resolve_job_config(
+    args: argparse.Namespace, defaults: Dict[str, object]
+) -> Tuple[JobConfig, List[str], List[str], str]:
     auto_fields: List[str] = []
-    nodes = args.nodes
-    partition = args.partition
-    cpus_per_task = args.cpus_per_task
-    memory = args.memory
-    gpus = args.gpus
+    default_fields: List[str] = []
 
-    detection_needed = any(value is None for value in (partition, nodes, cpus_per_task, memory, gpus))
-    best_partition = best_nodes = best_cpus = best_memory = best_gpus = None
-    if detection_needed:
-        best_partition, best_nodes, best_cpus, best_memory, best_gpus = get_node_resources()
+    def use_default(current_value: Optional[object], key: str) -> Optional[object]:
+        if current_value is not None:
+            return current_value
+        default_value = get_default(defaults, key)
+        if default_value is not None:
+            default_fields.append(key)
+        return default_value
 
-    if partition is None and best_partition is not None:
-        partition = best_partition
+    partition = use_default(args.partition, "partition")
+    nodes = use_default(args.nodes, "nodes")
+    tasks_per_node = use_default(args.tasks_per_node, "tasks_per_node")
+    cpus_per_task = use_default(args.cpus_per_task, "cpus_per_task")
+    memory = use_default(args.memory, "memory")
+    gpus = use_default(args.gpus, "gpus")
+    time = use_default(args.time, "time")
+    report_dir = use_default(args.report_dir, "report_dir") or DEFAULT_REPORT_DIR
+    script_dir = use_default(args.script_dir, "script_dir") or DEFAULT_SCRIPT_DIR
+
+    partition_infos: Dict[str, PartitionInfo] = {}
+    partition_info: Optional[PartitionInfo] = None
+
+    need_partition_data = (
+        partition is None
+        or cpus_per_task is None
+        or memory is None
+        or gpus is None
+        or time is None
+    )
+
+    if need_partition_data:
+        try:
+            partition_infos = query_partition_resources()
+        except RuntimeError as exc:
+            if partition is None or cpus_per_task is None or memory is None or gpus is None:
+                raise RuntimeError(str(exc))
+
+    if partition is None:
+        if not partition_infos:
+            raise RuntimeError(
+                "Unable to determine partition. Provide --partition or ensure 'sinfo' is available."
+            )
+        partition_info = max(
+            partition_infos.values(),
+            key=lambda info: (info.cpus_per_node, info.gpus, info.memory_mb),
+        )
+        partition = partition_info.name
         auto_fields.append("partition")
-    if nodes is None and best_nodes is not None:
-        nodes = best_nodes
+    else:
+        partition_info = partition_infos.get(str(partition)) if partition_infos else None
+
+    if nodes is None:
+        nodes = 1
         auto_fields.append("nodes")
-    if cpus_per_task is None and best_cpus is not None:
-        cpus_per_task = best_cpus
+
+    if tasks_per_node is None:
+        tasks_per_node = 1
+        auto_fields.append("tasks_per_node")
+
+    if cpus_per_task is None:
+        if partition_info is None:
+            raise RuntimeError(
+                "Unable to determine CPUs per task. Provide --cpus-per-task or ensure 'sinfo' is available."
+            )
+        cpus_per_task = partition_info.cpus_per_node
         auto_fields.append("cpus_per_task")
-    if memory is None and best_memory is not None:
-        memory = best_memory
+
+    if memory is None:
+        if partition_info is None:
+            raise RuntimeError(
+                "Unable to determine memory. Provide --memory or ensure 'sinfo' is available."
+            )
+        memory = partition_info.memory_display
         auto_fields.append("memory")
-    if gpus is None and best_gpus is not None:
-        gpus = best_gpus
+
+    if gpus is None:
+        if partition_info is not None:
+            gpus = partition_info.gpus
+        else:
+            gpus = 1
         auto_fields.append("gpus")
 
-    if partition is None or nodes is None or cpus_per_task is None or memory is None or gpus is None:
-        raise RuntimeError(
-            "Unable to determine required resources. Provide the missing flags or ensure 'sinfo' is available."
-        )
+    if time is None:
+        if partition_info is not None and partition_info.max_time:
+            time = partition_info.max_time
+        else:
+            time = DEFAULT_TIME
+        auto_fields.append("time")
 
     try:
-        account = args.account or get_default_account()
-        if args.account is None:
+        account = use_default(args.account, "account")
+        if account is None:
+            account = get_default_account()
             auto_fields.append("account")
     except RuntimeError as exc:
         raise RuntimeError(str(exc))
@@ -290,15 +517,15 @@ def resolve_job_config(args: argparse.Namespace) -> Tuple[JobConfig, List[str]]:
         interactive = True
 
     config = JobConfig(
-        nodes=nodes,
-        partition=partition,
-        account=account,
-        tasks_per_node=args.tasks_per_node,
-        cpus_per_task=cpus_per_task,
-        memory=memory,
-        gpus=gpus,
-        time=args.time,
-        report_dir=args.report_dir,
+        nodes=int(nodes),
+        partition=str(partition),
+        account=str(account),
+        tasks_per_node=int(tasks_per_node),
+        cpus_per_task=int(cpus_per_task),
+        memory=str(memory),
+        gpus=int(gpus),
+        time=str(time),
+        report_dir=str(report_dir),
         command=command_parts,
         nodelist=args.nodelist,
         exclude=args.exclude,
@@ -306,7 +533,7 @@ def resolve_job_config(args: argparse.Namespace) -> Tuple[JobConfig, List[str]]:
         interactive=interactive,
     )
 
-    return config, auto_fields
+    return config, auto_fields, default_fields, script_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -316,18 +543,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nodes", type=int, help="Number of nodes to request")
     parser.add_argument("--partition", help="Partition name to submit to")
     parser.add_argument("--account", help="SLURM account to charge")
-    parser.add_argument("--tasks-per-node", type=int, default=1, help="Tasks per node (default: 1)")
+    parser.add_argument(
+        "--tasks-per-node",
+        type=int,
+        help="Tasks per node (default: 1)",
+    )
     parser.add_argument("--cpus-per-task", type=int, help="CPU cores per task")
     parser.add_argument("--memory", help="Memory per node (e.g., 50G)")
     parser.add_argument("--gpus", type=int, help="GPUs per node")
-    parser.add_argument("--time", default="4-00:00:00", help="Job time limit (default: 4-00:00:00)")
+    parser.add_argument(
+        "--time",
+        help="Job time limit (default: partition maximum when available)",
+    )
     parser.add_argument("--nodelist", help="Comma separated list of nodes to include")
     parser.add_argument("--exclude", help="Comma separated list of nodes to exclude")
     parser.add_argument("--job-name", help="Optional job name shown in SLURM accounting")
-    parser.add_argument("--report-dir", default="./slurm-report", help="Directory where SLURM outputs logs")
-    parser.add_argument("--script-dir", default="./slurm_run", help="Directory to store generated sbatch scripts")
+    parser.add_argument(
+        "--report-dir",
+        help=f"Directory where SLURM outputs logs (default: {DEFAULT_REPORT_DIR})",
+    )
+    parser.add_argument(
+        "--script-dir",
+        help=f"Directory to store generated sbatch scripts (default: {DEFAULT_SCRIPT_DIR})",
+    )
     parser.add_argument("--interactive", action="store_true", help="Force an interactive srun session")
     parser.add_argument("--dry-run", action="store_true", help="Show the sbatch script without submitting")
+    parser.add_argument(
+        "--save-defaults",
+        action="store_true",
+        help="Persist the provided options as defaults and exit",
+    )
     parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
@@ -340,8 +585,18 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    defaults = load_user_defaults()
+
+    if args.save_defaults:
+        updates = collect_default_updates(args)
+        if updates:
+            save_user_defaults(updates)
+        else:
+            print("No values provided to save as defaults.")
+        return
+
     try:
-        config, auto_fields = resolve_job_config(args)
+        config, auto_fields, default_fields, script_dir = resolve_job_config(args, defaults)
     except RuntimeError as exc:
         print(f"Error: {exc}")
         return
@@ -349,7 +604,7 @@ def main() -> None:
     mode = "Interactive" if config.interactive else "Batch"
 
     if config.interactive:
-        print_job_summary(config, auto_fields, mode)
+        print_job_summary(config, auto_fields, default_fields, mode)
         run_interactive(config)
         return
 
@@ -359,18 +614,18 @@ def main() -> None:
         except ValueError as exc:
             print(f"Error: {exc}")
             return
-        print_job_summary(config, auto_fields, mode)
+        print_job_summary(config, auto_fields, default_fields, mode)
         print("\nDry run enabled – sbatch script preview:\n")
         print(script_content)
         return
 
     try:
-        script_path = generate_sbatch_script(config, args.script_dir)
+        script_path = generate_sbatch_script(config, script_dir)
     except ValueError as exc:
         print(f"Error: {exc}")
         return
 
-    print_job_summary(config, auto_fields, mode, script_path=script_path)
+    print_job_summary(config, auto_fields, default_fields, mode, script_path=script_path)
     submit_sbatch(script_path, config.report_dir)
 
 if __name__ == "__main__":
