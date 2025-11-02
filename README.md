@@ -1,6 +1,6 @@
 # WrapSlurm
 
-WrapSlurm is a powerful and user-friendly wrapper for SLURM job management, designed to simplify job submission, resource querying, and log monitoring in SLURM environments. With a suite of commands like `wrun`, `wlog`, `wqueue`, and `winfo`, WrapSlurm enhances productivity for researchers and engineers working in high-performance computing (HPC) clusters.
+WrapSlurm is a powerful and user-friendly wrapper for SLURM job management, designed to simplify job submission, resource querying, log monitoring, and cancellation in SLURM environments. With a suite of commands like `wrun`, `wlog`, `wqueue`, `winfo`, and `wk`, WrapSlurm enhances productivity for researchers and engineers working in high-performance computing (HPC) clusters.
 
 ---
 
@@ -16,6 +16,8 @@ WrapSlurm is a powerful and user-friendly wrapper for SLURM job management, desi
 
 - **Log Monitoring (`wl`)**:
   - Watch real-time SLURM logs for specific job IDs or the latest job.
+- **Job Cancellation (`wk`)**:
+  - Quickly terminate jobs (optionally with a signal) using a friendly wrapper around `scancel`.
 
 - **Queue Visualization (`wq`)**:
   - View and analyze job queues in a prettified table format with color-coded states.
@@ -35,7 +37,7 @@ pip install wrapslurm
 
 ### Post-Installation Notes
 
-If the scripts `wrun`, `wlog`, `wqueue`, and `winfo` are installed in a directory not included in your system's `PATH` (e.g., `~/.local/bin`), you may need to update your `PATH` environment variable:
+If the scripts `wrun`, `wlog`, `wqueue`, `winfo`, and `wk` are installed in a directory not included in your system's `PATH` (e.g., `~/.local/bin`), you may need to update your `PATH` environment variable:
 
 1. Add the following line to your shell configuration file (`~/.bashrc` or `~/.zshrc`):
 
@@ -61,6 +63,8 @@ Submit a script with auto-detected resources:
 ```bash
 wr ./train_script.py --epochs 10
 ```
+`wr` now shows a colorized summary of the resources that will be requested, including values auto-detected from `sinfo` and those loaded from saved defaults.
+
 `wr` now shows a colorized summary of the resources that will be requested, including values auto-detected from `sinfo` and those loaded from saved defaults.
 
 #### Specify Resources:
@@ -132,7 +136,32 @@ To inspect stderr instead, open `./slurm-report/12345678.err` with your preferre
 
 ---
 
-### 3. **View Job Queue (`wqueue`)**
+### 3. **Cancel a Job (`wk`)**
+
+Send `scancel` commands without memorizing flags:
+
+```bash
+wk 12345678
+```
+
+Cancel multiple jobs in one go:
+
+```bash
+wk 12345678 12345679
+```
+
+Pass through additional options such as a signal or user scope:
+
+```bash
+wk 12345678 --signal SIGINT
+wk --user alice 12345680
+```
+
+All options are forwarded to `scancel`, so you can combine them as needed.
+
+---
+
+### 4. **View Job Queue (`wqueue`)**
 
 Display the job queue in a table format:
 
@@ -142,7 +171,7 @@ wqueue
 
 ---
 
-### 4. **Query Node Resources (`winfo`)**
+### 5. **Query Node Resources (`winfo`)**
 
 #### Basic Usage:
 ```bash
