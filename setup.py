@@ -22,6 +22,7 @@ setup(
             "wq = wrapslurm.queue_info:main",
             "wr = wrapslurm.job_runner:main",
             "wl = wrapslurm.track_job:main",
+            "wk = wrapslurm.cancel_job:main",
         ],
     },
     classifiers=[
