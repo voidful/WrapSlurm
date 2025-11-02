@@ -63,6 +63,7 @@ Submit a script with auto-detected resources:
 ```bash
 wr ./train_script.py --epochs 10
 ```
+`wr` now shows a colorized summary of the resources that will be requested, including values auto-detected from `sinfo` and those loaded from saved defaults.
 
 `wr` now shows a colorized summary of the resources that will be requested, including values auto-detected from `sinfo` and those loaded from saved defaults.
 
