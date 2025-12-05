@@ -4,6 +4,8 @@ import grp
 from terminaltables import AsciiTable
 from termcolor import colored
 import os
+import sys
+import re
 
 MAX_NAME_LENGTH = 30  # Maximum length for the job name
 
@@ -18,6 +20,205 @@ def truncate_name(name, max_length):
     return name
 
 
+def run_command(cmd, shell=False):
+    """Run a shell command and return its output."""
+    try:
+        if shell:
+            output = subprocess.check_output(cmd, stderr=subprocess.PIPE, shell=True, text=True)
+        else:
+            output = subprocess.check_output(cmd, stderr=subprocess.PIPE, text=True)
+        return output.strip()
+    except subprocess.CalledProcessError:
+        return ""
+    except Exception:
+        return ""
+
+
+def get_job_gpu_req(job_id):
+    """Parse scontrol to find GPU requirements for a job."""
+    output = run_command(["scontrol", "show", "job", str(job_id)])
+    # Look for ReqTRES=...gres/gpu=N...
+    req_tres = re.search(r"ReqTRES=.*gres/gpu(?::[a-zA-Z0-9]+)?=(\d+)", output)
+    if req_tres:
+        return int(req_tres.group(1))
+    
+    # Look for TresPerJob=...gres/gpu:N...
+    tres_per_job = re.search(r"TresPerJob=.*gres/gpu(?::[a-zA-Z0-9]+)?:(\d+)", output)
+    if tres_per_job:
+        return int(tres_per_job.group(1))
+        
+    return 0
+
+
+def get_user_gpu_running(user):
+    """Calculate total GPUs currently running for a user."""
+    # Get all running job IDs for the user
+    output = run_command(["squeue", "-u", user, "-t", "R", "-h", "-o", "%i"])
+    if not output:
+        return 0
+    
+    total_gpu = 0
+    job_ids = output.split()
+    for jid in job_ids:
+        total_gpu += get_job_gpu_req(jid)
+    
+    return total_gpu
+
+
+def analyze_job(job_id):
+    """
+    Analyze a specific job ID and print detailed status.
+    Translates the logic from the provided bash script.
+    """
+    print(colored(f"Job ID: {job_id}", "cyan", attrs=["bold"]))
+    print(colored("=" * 20, "cyan"))
+    print()
+
+    # 1. Check status from squeue
+    print(colored("[1] Current status from squeue", "yellow"))
+    print("-" * 20)
+
+    squeue_out = run_command(["squeue", "-j", str(job_id), "-h", "-o", "%i %t %T %M %R"])
+
+    if not squeue_out:
+        print(colored("Job not found in squeue. It may be completed, failed, or purged from queue.", "red"))
+        print(colored("Trying sacct for historical info...", "yellow"))
+        print()
+        
+        # sacct fallback
+        sacct_cmd = ["sacct", "-j", str(job_id), "--format=JobIDRaw,State,Elapsed,Timelimit,AllocCPUS,NodeList,ExitCode,Reason", "-P"]
+        sacct_out = run_command(sacct_cmd)
+        if sacct_out:
+             # Pretty print sacct output (replace | with spacing)
+             header = sacct_out.split('\n')[0].replace('|', '  ')
+             print(colored(header, attrs=['bold']))
+             for line in sacct_out.split('\n')[1:]:
+                 print(line.replace('|', '  '))
+        else:
+            print("No info found in sacct.")
+        return
+
+    parts = squeue_out.split()
+    # squeue output format: JobID StateShort StateLong Time Reason/Node
+    # Caution: Reason can contain spaces? Usually %R is last, so remainder is reason.
+    # But split() might break it. Let's rely on fixed fields if possible or careful split.
+    # The bash script uses awk column logic.
+    # %i %t %T %M %R
+    # jobid st ST time reason
+    
+    job_state_short = parts[1]
+    job_state_long = parts[2]
+    job_time = parts[3]
+    job_reason = " ".join(parts[4:])
+
+    print(f"  State(short): {colored(job_state_short, attrs=['bold'])}")
+    print(f"  State(long) : {colored(job_state_long, attrs=['bold'])}")
+    print(f"  Time        : {job_time}")
+    print(f"  Reason/Node : {job_reason}")
+    print()
+
+    # 2. Analyze based on state
+    print(colored(f"[2] Analysis", "yellow"))
+    print("-" * 20)
+
+    if job_state_short == "R":
+        print("Job is RUNNING.")
+        print("Showing more details from scontrol:")
+        print(run_command(["scontrol", "show", "job", str(job_id)]))
+
+    elif job_state_short == "PD":
+        print(colored("Job is PENDING.", "yellow"))
+        print(f"Reason: {job_reason}")
+        print()
+        
+        reason_upper = job_reason.upper()
+        
+        reasons_map = {
+            "PRIORITY": "Lower priority. Waiting for higher priority jobs to finish.",
+            "RESOURCES": "Insufficient resources (CPU/GPU/Mem or Node constraints).",
+            "PARTITION": "Partition constraints (down or time limit mismatch).",
+            "ACCT_MAX_CPU_PER_USER": "Account reached CPU usage limit.",
+            "QOS": "QOS limit reached.",
+            "NODE_DOWN": "Required node(s) are down or in maintenance.",
+            "LICENSE": "Waiting for licenses.",
+            "ASSOCIATION": "Association limit reached."
+        }
+
+        found_reason = False
+        for key, explanation in reasons_map.items():
+            if key in reason_upper:
+                print(f"- {colored(key, 'red')}: {explanation}")
+                found_reason = True
+        
+        # Special handling for QOSMaxGRESPerUser
+        if "QOSMAXGRESPERUSER" in reason_upper:
+            print()
+            print(colored("!!! QOSMaxGRESPerUser Detected !!!", "red", attrs=["bold"]))
+            print("This QOS has a limit on GPU per user.")
+            print("Starting this job would exceed your total GPU limit.")
+            print()
+
+            # Get User ID from scontrol
+            scontrol_out = run_command(["scontrol", "show", "job", str(job_id)])
+            user_match = re.search(r"UserId=([a-z0-9_]+)", scontrol_out)
+            job_user = user_match.group(1) if user_match else "unknown"
+
+            job_gpu_req = get_job_gpu_req(job_id)
+            user_gpu_running = get_user_gpu_running(job_user)
+            total_if_run = user_gpu_running + job_gpu_req
+
+            print(f"  User: {colored(job_user, attrs=['bold'])}")
+            print(f"  Current RUNNING GPUs: {colored(str(user_gpu_running), 'green')}")
+            print(f"  This Job Requires:    {colored(str(job_gpu_req), 'yellow')}")
+            print(f"  Total if Started:     {colored(str(total_if_run), 'red')}")
+            print()
+            print(f"  The limit L satisfies: {user_gpu_running} <= L < {total_if_run}")
+            print()
+            
+            # Try sacctmgr for exact limit
+            try:
+                # Mocking check for sacctmgr existence by running it
+                sacctmgr_out = run_command(["sacctmgr", "show", "qos", "-nP", "format=Name,MaxTRESPerUser"])
+                # Output format: Name|MaxTRESPerUser
+                # We need to find the relevant line. Since we don't know which QOS, we might look for any that has GPU limit?
+                # The bash script just grep gpu.
+                # Let's try to extract any gpu limit
+                if sacctmgr_out:
+                    gpu_limits = re.findall(r"gres/gpu=(\d+)", sacctmgr_out)
+                    if gpu_limits:
+                        limit_gpu = int(gpu_limits[0]) # Start with the first one found, better than nothing
+                        over_by = total_if_run - limit_gpu
+                        print(colored("  [sacctmgr Estimate]", "cyan"))
+                        print(f"  Found a QOS with MaxTRESPerUser: gres/gpu={limit_gpu}")
+                        if over_by > 0:
+                            print(f"  You would exceed this limit by {over_by} GPUs.")
+                        else:
+                            print("  (Warning: The active QOS might be different from this detected one.)")
+            except Exception:
+                pass
+        
+        if not found_reason and "QOSMAXGRESPERUSER" not in reason_upper:
+             print("Please check 'scontrol show job' for more details.")
+             print(run_command(["scontrol", "show", "job", str(job_id)]))
+
+    elif job_state_short == "CG":
+        print("Job is COMPLETING.")
+        sacct_cmd = ["sacct", "-j", str(job_id), "--format=JobIDRaw,State,Elapsed,Timelimit,AllocCPUS,NodeList,ExitCode,Reason", "-P"]
+        print(run_command(sacct_cmd).replace('|', '  '))
+
+    elif job_state_short in ["F", "TO", "NF", "CA", "CD", "FAILED", "TIMEOUT", "NODE_FAIL", "CANCELLED", "COMPLETED"]:
+        print(f"Job is in terminal state: {job_state_short}")
+        sacct_cmd = ["sacct", "-j", str(job_id), "--format=JobIDRaw,State,Elapsed,Timelimit,AllocCPUS,NodeList,ExitCode,Reason", "-P"]
+        print(run_command(sacct_cmd).replace('|', '  '))
+        
+    else:
+        print(f"Job state: {job_state_short}")
+        print(run_command(["scontrol", "show", "job", str(job_id)]))
+
+    print()
+    print(colored("=" * 20, "cyan"))
+
+
 def show_squeue():
     """
     Display the output of the `squeue` command in a prettier, tabular format.
@@ -29,18 +230,23 @@ def show_squeue():
         gid = max(os.getgroups())
         gr_mem = grp.getgrgid(gid).gr_mem
     except Exception as e:
-        raise RuntimeError(f"Error retrieving user or group information: {e}")
+        # Fallback if group info fails
+        user = os.environ.get('USER', 'unknown')
+        gr_mem = []
 
     # Execute the `squeue` command and format the output for parsing
     cmd = ['squeue', '--noheader', '-o', '%i|%P|%j|%u|%T|%M|%D|%R']
     try:
         output = subprocess.check_output(cmd, stderr=subprocess.PIPE, text=True).strip()
     except FileNotFoundError:
-        raise RuntimeError("Command 'squeue' not found. Please ensure SLURM is installed and added to PATH.")
+        print("Command 'squeue' not found. Please ensure SLURM is installed and added to PATH.")
+        return
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Error while executing squeue: {e.stderr.strip()}")
+        print(f"Error while executing squeue: {e.stderr.strip()}")
+        return
     except Exception as e:
-        raise RuntimeError(f"Unexpected error while executing squeue: {e}")
+        print(f"Unexpected error while executing squeue: {e}")
+        return
 
     # Parse the output into lines
     lines = output.split('\n')
@@ -56,7 +262,6 @@ def show_squeue():
     for line in lines:
         parts = line.split('|')
         if len(parts) < 8:
-            print(f"Skipping incomplete line: {line}")
             continue  # Skip incomplete lines
 
         job_id = parts[0].strip()
@@ -106,11 +311,17 @@ def main():
     Main entry point for the `wqueue` command.
     """
     try:
-        show_squeue()
+        if len(sys.argv) > 1 and sys.argv[1] not in ["-h", "--help"]:
+            analyze_job(sys.argv[1])
+        else:
+            show_squeue()
+    except KeyboardInterrupt:
+        pass
     except RuntimeError as e:
         print(f"Error: {e}")
     except Exception as e:
         print(f"Unexpected error: {e}")
 
 
-
+if __name__ == "__main__":
+    main()

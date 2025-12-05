@@ -25,6 +25,9 @@ WrapSlurm is a powerful and user-friendly wrapper for SLURM job management, desi
 - **Node Resource Querying (`wi`)**:
   - Display detailed SLURM node information, including memory, CPU, and GPU usage.
 
+- **Help / Usage (`ws`)**:
+  - Display a summary of all WrapSlurm commands and their usage.
+
 ---
 
 ## Installation
