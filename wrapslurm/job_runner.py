@@ -21,6 +21,11 @@ except ImportError:  # pragma: no cover
     def colored(text, *_args, **_kwargs):
         return text
 
+from wrapslurm.interactive_config import (
+    is_interactive_available,
+    prompt_missing_params,
+)
+
 DEFAULT_SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH -N {nodes}
 #SBATCH -p {partition}
@@ -408,7 +413,7 @@ def print_job_summary(
 
 
 def resolve_job_config(
-    args: argparse.Namespace, defaults: Dict[str, object]
+    args: argparse.Namespace, defaults: Dict[str, object], use_defaults: bool = False
 ) -> Tuple[JobConfig, List[str], List[str], str]:
     auto_fields: List[str] = []
     default_fields: List[str] = []
@@ -448,6 +453,49 @@ def resolve_job_config(
         except RuntimeError as exc:
             if partition is None or cpus_per_task is None or memory is None or gpus is None:
                 raise RuntimeError(str(exc))
+
+    # Determine which fields are missing and need interactive prompts
+    missing_fields: List[str] = []
+    if partition is None:
+        missing_fields.append("partition")
+    if nodes is None:
+        missing_fields.append("nodes")
+    if tasks_per_node is None:
+        missing_fields.append("tasks_per_node")
+    if cpus_per_task is None:
+        missing_fields.append("cpus_per_task")
+    if memory is None:
+        missing_fields.append("memory")
+    if gpus is None:
+        missing_fields.append("gpus")
+    if time is None:
+        missing_fields.append("time")
+    if args.account is None and get_default(defaults, "account") is None:
+        missing_fields.append("account")
+
+    # Use interactive prompts if not using defaults mode and there are missing fields
+    interactive_results: Dict[str, object] = {}
+    if missing_fields and not use_defaults and is_interactive_available():
+        interactive_results = prompt_missing_params(
+            missing_fields=missing_fields,
+            partition_infos=partition_infos,
+            defaults=defaults,
+        )
+        # Apply interactive results
+        if "partition" in interactive_results:
+            partition = interactive_results["partition"]
+        if "nodes" in interactive_results:
+            nodes = interactive_results["nodes"]
+        if "tasks_per_node" in interactive_results:
+            tasks_per_node = interactive_results["tasks_per_node"]
+        if "cpus_per_task" in interactive_results:
+            cpus_per_task = interactive_results["cpus_per_task"]
+        if "memory" in interactive_results:
+            memory = interactive_results["memory"]
+        if "gpus" in interactive_results:
+            gpus = interactive_results["gpus"]
+        if "time" in interactive_results:
+            time = interactive_results["time"]
 
     if partition is None:
         if not partition_infos:
@@ -503,6 +551,8 @@ def resolve_job_config(
 
     try:
         account = use_default(args.account, "account")
+        if account is None and "account" in interactive_results:
+            account = interactive_results["account"]
         if account is None:
             account = get_default_account()
             auto_fields.append("account")
@@ -540,24 +590,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Submit and manage SLURM jobs with sensible defaults and friendly output.",
     )
-    parser.add_argument("--nodes", type=int, help="Number of nodes to request")
-    parser.add_argument("--partition", help="Partition name to submit to")
-    parser.add_argument("--account", help="SLURM account to charge")
+    parser.add_argument("-N", "--nodes", type=int, help="Number of nodes to request")
+    parser.add_argument("-p", "--partition", help="Partition name to submit to")
+    parser.add_argument("-A", "--account", help="SLURM account to charge")
     parser.add_argument(
+        "-n",
         "--tasks-per-node",
         type=int,
         help="Tasks per node (default: 1)",
     )
-    parser.add_argument("--cpus-per-task", type=int, help="CPU cores per task")
-    parser.add_argument("--memory", help="Memory per node (e.g., 50G)")
-    parser.add_argument("--gpus", type=int, help="GPUs per node")
+    parser.add_argument("-c", "--cpus-per-task", type=int, help="CPU cores per task")
+    parser.add_argument("--mem", "--memory", dest="memory", help="Memory per node (e.g., 50G)")
+    parser.add_argument("-G", "--gpus", type=int, help="GPUs per node")
     parser.add_argument(
+        "-t",
         "--time",
         help="Job time limit (default: partition maximum when available)",
     )
-    parser.add_argument("--nodelist", help="Comma separated list of nodes to include")
-    parser.add_argument("--exclude", help="Comma separated list of nodes to exclude")
-    parser.add_argument("--job-name", help="Optional job name shown in SLURM accounting")
+    parser.add_argument("-w", "--nodelist", help="Comma separated list of nodes to include")
+    parser.add_argument("-x", "--exclude", help="Comma separated list of nodes to exclude")
+    parser.add_argument("-J", "--job-name", help="Optional job name shown in SLURM accounting")
     parser.add_argument(
         "--report-dir",
         help=f"Directory where SLURM outputs logs (default: {DEFAULT_REPORT_DIR})",
@@ -566,8 +618,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--script-dir",
         help=f"Directory to store generated sbatch scripts (default: {DEFAULT_SCRIPT_DIR})",
     )
-    parser.add_argument("--interactive", action="store_true", help="Force an interactive srun session")
+    parser.add_argument("-i", "--interactive", action="store_true", help="Force an interactive srun session")
     parser.add_argument("--dry-run", action="store_true", help="Show the sbatch script without submitting")
+    parser.add_argument(
+        "-d", "--defaults",
+        action="store_true",
+        help="Use auto-detected defaults without interactive prompts",
+    )
     parser.add_argument(
         "--save-defaults",
         action="store_true",
@@ -596,7 +653,9 @@ def main() -> None:
         return
 
     try:
-        config, auto_fields, default_fields, script_dir = resolve_job_config(args, defaults)
+        config, auto_fields, default_fields, script_dir = resolve_job_config(
+            args, defaults, use_defaults=args.defaults
+        )
     except RuntimeError as exc:
         print(f"Error: {exc}")
         return
