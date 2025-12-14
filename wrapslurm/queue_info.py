@@ -65,6 +65,94 @@ def get_user_gpu_running(user):
     return total_gpu
 
 
+def get_user_pending_jobs(user):
+    """Get list of pending job IDs for a user."""
+    output = run_command(["squeue", "-u", user, "-t", "PD", "-h", "-o", "%i"])
+    if not output:
+        return []
+    return output.split()
+
+
+def analyze_pending_job_brief(job_id, user):
+    """
+    Display a brief analysis panel for a pending job.
+    Shows key information in a compact table format.
+    """
+    from terminaltables import AsciiTable
+    
+    # Get job details from squeue
+    squeue_out = run_command(["squeue", "-j", str(job_id), "-h", "-o", "%i|%P|%j|%T|%M|%l|%D|%R"])
+    if not squeue_out:
+        print(colored(f"  Job {job_id}: Not found in queue", "red"))
+        return
+    
+    parts = squeue_out.split('|')
+    if len(parts) < 8:
+        print(colored(f"  Job {job_id}: Unable to parse job info", "red"))
+        return
+    
+    partition = parts[1].strip()
+    job_name = truncate_name(parts[2].strip(), MAX_NAME_LENGTH)
+    state = parts[3].strip()
+    wait_time = parts[4].strip()
+    time_limit = parts[5].strip()
+    nodes = parts[6].strip()
+    reason = parts[7].strip()
+    
+    # Get GPU requirements
+    gpu_req = get_job_gpu_req(job_id)
+    
+    # Get scontrol details for more info
+    scontrol_out = run_command(["scontrol", "show", "job", str(job_id)])
+    
+    # Parse CPUs per task
+    cpus_match = re.search(r"NumCPUs=(\d+)", scontrol_out)
+    cpus = cpus_match.group(1) if cpus_match else "N/A"
+    
+    # Parse memory
+    mem_match = re.search(r"MinMemoryNode=(\d+\w?)", scontrol_out)
+    memory = mem_match.group(1) if mem_match else "N/A"
+    
+    # Build the panel rows
+    rows = [
+        ["Setting", "Value"],
+        ["Job ID", colored(str(job_id), "yellow", attrs=["bold"])],
+        ["Name", job_name],
+        ["Partition", partition],
+        ["Nodes", nodes],
+        ["CPUs", cpus],
+        ["Memory", memory],
+        ["GPUs", str(gpu_req) if gpu_req > 0 else "0"],
+        ["Time Limit", time_limit],
+        ["Wait Time", wait_time],
+        ["Reason", colored(reason, "red" if "QOSMAXGRES" in reason.upper() or "PRIORITY" in reason.upper() else "yellow")],
+    ]
+    
+    # Create table
+    table = AsciiTable(rows)
+    table.title = colored(f" Job {job_id} ", "cyan", attrs=["bold"])
+    table.justify_columns[0] = 'right'
+    table.justify_columns[1] = 'left'
+    print(table.table)
+    
+    # Additional analysis for specific reasons
+    reason_upper = reason.upper()
+    
+    if "QOSMAXGRESPERUSER" in reason_upper:
+        user_gpu_running = get_user_gpu_running(user)
+        total_if_run = user_gpu_running + gpu_req
+        print(colored("  ⚠ GPU Limit Exceeded:", "red", attrs=["bold"]))
+        print(f"    Running GPUs: {colored(str(user_gpu_running), 'green')} | "
+              f"This job needs: {colored(str(gpu_req), 'yellow')} | "
+              f"Total if started: {colored(str(total_if_run), 'red')}")
+    elif "PRIORITY" in reason_upper:
+        print(colored("  ℹ Waiting for higher priority jobs to complete", "cyan"))
+    elif "RESOURCES" in reason_upper:
+        print(colored("  ℹ Waiting for resources (CPU/GPU/Memory) to become available", "cyan"))
+    elif "PARTITION" in reason_upper:
+        print(colored("  ℹ Partition constraints - check partition availability", "cyan"))
+
+
 def analyze_job(job_id):
     """
     Analyze a specific job ID and print detailed status.
@@ -304,6 +392,17 @@ def show_squeue():
         table.justify_columns[i] = 'left'
     table.justify_columns[0] = 'right'  # Right-align JobID for better readability
     print(table.table)
+
+    # Automatically analyze the current user's pending jobs
+    pending_jobs = get_user_pending_jobs(user)
+    if pending_jobs:
+        print()
+        print(colored("=" * 60, "cyan"))
+        print(colored(f"  Your Pending Jobs Analysis ({len(pending_jobs)} job(s))", "cyan", attrs=["bold"]))
+        print(colored("=" * 60, "cyan"))
+        for job_id in pending_jobs:
+            print()
+            analyze_pending_job_brief(job_id, user)
 
 
 def main():
