@@ -10,6 +10,71 @@ import re
 MAX_NAME_LENGTH = 30  # Maximum length for the job name
 
 
+def parse_slurm_time(time_str):
+    """
+    Parse SLURM time format and return total minutes.
+    Formats: DD-HH:MM:SS, HH:MM:SS, MM:SS, or UNLIMITED
+    Returns None if unlimited or invalid.
+    """
+    if not time_str or time_str.strip() in ["UNLIMITED", "NOT_SET", ""]:
+        return None
+    
+    time_str = time_str.strip()
+    
+    try:
+        # Handle DD-HH:MM:SS format
+        if '-' in time_str:
+            days_part, time_part = time_str.split('-')
+            days = int(days_part)
+            parts = time_part.split(':')
+        else:
+            days = 0
+            parts = time_str.split(':')
+        
+        # Parse time components
+        if len(parts) == 3:  # HH:MM:SS
+            hours, minutes, seconds = map(int, parts)
+        elif len(parts) == 2:  # MM:SS
+            hours = 0
+            minutes, seconds = map(int, parts)
+        elif len(parts) == 1:  # Just minutes
+            hours = 0
+            minutes = int(parts[0])
+            seconds = 0
+        else:
+            return None
+        
+        # Convert to total minutes
+        total_minutes = days * 24 * 60 + hours * 60 + minutes + seconds / 60
+        return int(total_minutes)
+    except (ValueError, AttributeError):
+        return None
+
+
+def format_time_remaining(minutes):
+    """
+    Format minutes into a human-readable string.
+    Returns format like: 2d 3h, 5h 30m, 45m, etc.
+    """
+    if minutes is None or minutes < 0:
+        return "N/A"
+    
+    days = int(minutes // (24 * 60))
+    hours = int((minutes % (24 * 60)) // 60)
+    mins = int(minutes % 60)
+    
+    if days > 0:
+        if hours > 0:
+            return f"{days}d {hours}h"
+        return f"{days}d"
+    elif hours > 0:
+        if mins > 0:
+            return f"{hours}h {mins}m"
+        return f"{hours}h"
+    else:
+        return f"{mins}m"
+
+
 def truncate_name(name, max_length):
     """
     Truncate the job name if it exceeds the maximum length.
@@ -323,7 +388,8 @@ def show_squeue():
         gr_mem = []
 
     # Execute the `squeue` command and format the output for parsing
-    cmd = ['squeue', '--noheader', '-o', '%i|%P|%j|%u|%T|%M|%D|%R']
+    # Added %l for time limit to calculate remaining time
+    cmd = ['squeue', '--noheader', '-o', '%i|%P|%j|%u|%T|%M|%l|%D|%R']
     try:
         output = subprocess.check_output(cmd, stderr=subprocess.PIPE, text=True).strip()
     except FileNotFoundError:
@@ -342,14 +408,14 @@ def show_squeue():
         print("No jobs in the queue.")
         return
 
-    # Define table headers
-    titles = ["JobID", "Partition", "Name", "User", "State", "Time", "Nodes", "NodeList"]
+    # Define table headers - added "Remaining" column
+    titles = ["JobID", "Partition", "Name", "User", "State", "Time", "Remaining", "Nodes", "NodeList"]
 
     # Parse each line and build rows for the table
     rows = []
     for line in lines:
         parts = line.split('|')
-        if len(parts) < 8:
+        if len(parts) < 9:
             continue  # Skip incomplete lines
 
         job_id = parts[0].strip()
@@ -358,8 +424,19 @@ def show_squeue():
         username = parts[3].strip()
         state = parts[4].strip()
         run_time = parts[5].strip()
-        node_count = parts[6].strip()
-        nodelist = parts[7].strip()
+        time_limit = parts[6].strip()
+        node_count = parts[7].strip()
+        nodelist = parts[8].strip()
+        
+        # Calculate remaining time
+        elapsed_mins = parse_slurm_time(run_time)
+        limit_mins = parse_slurm_time(time_limit)
+        
+        if elapsed_mins is not None and limit_mins is not None:
+            remaining_mins = limit_mins - elapsed_mins
+            remaining_time = format_time_remaining(remaining_mins)
+        else:
+            remaining_time = "N/A"
 
         # Highlight jobs belonging to the current user or user's group
         mygroup = (username == user or username in gr_mem)
@@ -383,7 +460,7 @@ def show_squeue():
             state = colored(state, 'cyan', attrs=['bold'])
 
         # Add the row to the table
-        row = [job_id, partition, job_name, username, state, run_time, node_count, nodelist]
+        row = [job_id, partition, job_name, username, state, run_time, remaining_time, node_count, nodelist]
         rows.append(row)
 
     # Create and print the table
