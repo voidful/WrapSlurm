@@ -71,6 +71,7 @@ def parse_node_data(data):
     # Extract GPU details
     gpu_total = 0
     gpu_alloc = 0
+    gpu_details = []  # Store detailed GPU allocation info
 
     cfg_tres_match = re.search(r"CfgTRES=([^\n]*)", data)
     if cfg_tres_match:
@@ -82,9 +83,15 @@ def parse_node_data(data):
     alloc_tres_match = re.search(r"AllocTRES=([^\n]*)", data)
     if alloc_tres_match:
         alloc = alloc_tres_match.group(1)
+        # Extract total GPU allocation
         m = re.search(r"gres/gpu=(\d+)", alloc)
         if m:
             gpu_alloc = int(m.group(1))
+        
+        # Extract specific GPU types and their counts (e.g., gres/gpu:3090=2)
+        gpu_type_matches = re.findall(r"gres/gpu:([a-zA-Z0-9]+)=(\d+)", alloc)
+        for gpu_type, count in gpu_type_matches:
+            gpu_details.append(f"{gpu_type}={count}")
 
     if gpu_total == 0:
         gres_match = re.search(r"Gres=\S*?gpu[^:]*:(\d+)", data)
@@ -115,6 +122,7 @@ def parse_node_data(data):
         "CPULoad": cpu_load,
         "GPUAlloc": gpu_alloc,
         "GPUTot": gpu_total,
+        "GPUDetails": ", ".join(gpu_details) if gpu_details else "",
     }
 
 
@@ -145,16 +153,29 @@ def display_nodes(nodes, graph=False):
     if graph:
         return display_nodes_graph(nodes)
 
-    titles = ["NodeName", "State", "Partitions", "CPUs", "Memory"]
+    titles = ["NodeName", "State", "Partitions", "CPUs", "Memory", "GPUs"]
 
     rows = []
     for node in nodes:
+        # Format GPU information
+        gpu_alloc = node.get("GPUAlloc", 0)
+        gpu_total = node.get("GPUTot", 0)
+        gpu_details = node.get("GPUDetails", "")
+        
+        if gpu_total > 0:
+            gpu_info = f"{gpu_alloc}/{gpu_total}"
+            if gpu_details:
+                gpu_info += f" ({gpu_details})"
+        else:
+            gpu_info = "N/A"
+        
         rows.append([
             node["NodeName"],
             color_state(node["State"]),
             node["Partitions"],
             node["CPUs"],
-            node["Memory"]
+            node["Memory"],
+            gpu_info
         ])
 
     table = AsciiTable([titles] + rows)
