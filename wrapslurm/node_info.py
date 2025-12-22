@@ -141,23 +141,27 @@ def color_state(state):
         return colored(state, "cyan", attrs=["bold"])
 
 
-def display_nodes(nodes, graph=False):
+def display_nodes(nodes, slots=8):
     """
-    Display node information in a table format. If ``graph`` is True, show a
-    simple GPU usage graph with one column per GPU.
+    Display node information in a table format, including detailed info and a
+    GPU usage graph.
     """
     if not nodes:
         print("No node information to display.")
         return
 
-    if graph:
-        return display_nodes_graph(nodes)
-
+    # Determine max GPU slots for the table
+    max_slots = max([n.get("GPUTot", 0) for n in nodes] + [slots])
+    
+    # Define table headers
     titles = ["NodeName", "State", "Partitions", "CPUs", "Memory", "GPUs"]
+    # Add column headers for each GPU slot
+    for i in range(max_slots):
+        titles.append(f" #{i+1} ")
 
     rows = []
     for node in nodes:
-        # Format GPU information
+        # Format text-based GPU information
         gpu_alloc = node.get("GPUAlloc", 0)
         gpu_total = node.get("GPUTot", 0)
         gpu_details = node.get("GPUDetails", "")
@@ -169,47 +173,25 @@ def display_nodes(nodes, graph=False):
         else:
             gpu_info = "N/A"
         
+        # Format GPU usage graph bars
+        used = min(gpu_alloc, gpu_total)
+        bar = []
+        for i in range(max_slots):
+            if i < used:
+                bar.append("#")
+            elif i < gpu_total:
+                bar.append(" ")
+            else:
+                bar.append("")
+        
         rows.append([
             node["NodeName"],
             color_state(node["State"]),
             node["Partitions"],
             node["CPUs"],
             node["Memory"],
-            gpu_info
-        ])
-
-    table = AsciiTable([titles] + rows)
-    for i in range(len(titles)):
-        table.justify_columns[i] = "left"
-    table.justify_columns[0] = "right"
-
-    output = table.table
-    print(output)
-    return output
-
-
-def display_nodes_graph(nodes, slots=8):
-    """Display nodes with an ASCII GPU usage graph."""
-    max_slots = max([n.get("GPUTot", 0) for n in nodes] + [slots])
-    titles = ["NodeName"] + [f" #{i+1} " for i in range(max_slots)] + ["CPUld", "State"]
-
-    rows = []
-    for node in nodes:
-        total = node.get("GPUTot", max_slots)
-        used = min(node.get("GPUAlloc", 0), total)
-        bar = []
-        for i in range(max_slots):
-            if i < used:
-                bar.append("#")
-            elif i < total:
-                bar.append(" ")
-            else:
-                bar.append("")
-        rows.append([
-            node["NodeName"],
-            *bar,
-            f"{node.get('CPULoad', 0):.2f}",
-            color_state(node["State"]),
+            gpu_info,
+            *bar
         ])
 
     table = AsciiTable([titles] + rows)
@@ -227,7 +209,7 @@ def main():
     Entry point for the 'winfo' command.
     """
     parser = argparse.ArgumentParser(
-        description="Display SLURM node information with options to include 'down' or 'drain' nodes."
+        description="Display SLURM node information with a unified table including GPU usage graph."
     )
     parser.add_argument(
         "--include-down",
@@ -237,12 +219,18 @@ def main():
     parser.add_argument(
         "--graph",
         action="store_true",
-        help="Display nodes with an ASCII GPU usage graph."
+        help="Formerly used to toggle graph view. Now the merged view is default."
+    )
+    parser.add_argument(
+        "--slots",
+        type=int,
+        default=8,
+        help="Minimum number of GPU slots to display (default: 8)."
     )
     args = parser.parse_args()
 
     try:
         nodes = get_node_info(include_down=args.include_down)
-        display_nodes(nodes, graph=args.graph)
+        display_nodes(nodes, slots=args.slots)
     except RuntimeError as e:
         print(f"Error: {e}")
