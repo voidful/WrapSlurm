@@ -246,9 +246,8 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
     for i in range(max_slots):
         titles.append(f" #{i+1} ")
     
-    # Add %CPU and State columns at the end
+    # Add %CPU column at the end
     titles.append("%CPU")
-    titles.append("State")
 
     rows = []
     for node in nodes:
@@ -273,38 +272,24 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
         if show_job_ids and node_name in job_mapping:
             # Get jobs running on this node
             jobs = job_mapping[node_name]
-            slot_idx = 0
             
+            # Assign job IDs to GPU slots
+            slot_assignments = []
             for job_id, gpu_count in jobs:
-                # Create visual representation for this job
-                if gpu_count == 1:
-                    # Single GPU: <jobid>
-                    gpu_slots.append(f"<{job_id}>")
-                    slot_idx += 1
-                else:
-                    # Multiple GPUs: <~~~~jobid~~~~> spanning multiple slots
-                    job_str = str(job_id)
-                    # Calculate padding for visual effect
-                    total_width = gpu_count * 7 - 2  # Approximate column width
-                    padding_needed = max(0, total_width - len(job_str) - 2)
-                    left_pad = padding_needed // 2
-                    right_pad = padding_needed - left_pad
-                    
-                    formatted_job = f"<{'~' * left_pad}{job_id}{'~' * right_pad}>"
-                    gpu_slots.append(formatted_job)
-                    
-                    # Add empty slots for the remaining GPUs this job uses
-                    for _ in range(gpu_count - 1):
-                        gpu_slots.append("")
-                    
-                    slot_idx += gpu_count
+                for _ in range(gpu_count):
+                    slot_assignments.append(str(job_id))
             
-            # Fill remaining slots with empty spaces
-            while len(gpu_slots) < max_slots:
-                if len(gpu_slots) < gpu_total:
-                    gpu_slots.append("")  # Available but unused GPU
+            # Fill GPU slots
+            for i in range(max_slots):
+                if i < len(slot_assignments):
+                    # Show job ID in this slot
+                    gpu_slots.append(slot_assignments[i])
+                elif i < gpu_total:
+                    # Available but unused GPU
+                    gpu_slots.append("")
                 else:
-                    gpu_slots.append("")  # No GPU slot
+                    # No GPU slot
+                    gpu_slots.append("")
         else:
             # Fallback to simple # visualization if no job mapping
             used = min(gpu_alloc, gpu_total)
@@ -312,9 +297,10 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
                 if i < used:
                     gpu_slots.append("#")
                 elif i < gpu_total:
-                    gpu_slots.append(" ")
+                    gpu_slots.append("")
                 else:
                     gpu_slots.append("")
+
         
         # Ensure we have exactly max_slots elements
         while len(gpu_slots) < max_slots:
@@ -322,9 +308,6 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
         
         # Format CPU load percentage
         cpu_load_str = f"{cpu_load:.2f}"
-        
-        # Get state
-        state_str = node["State"]
         
         rows.append([
             node_name,
@@ -334,8 +317,7 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
             node["Memory"],
             gpu_info,
             *gpu_slots[:max_slots],
-            cpu_load_str,
-            state_str
+            cpu_load_str
         ])
 
     table = AsciiTable([titles] + rows)
