@@ -115,6 +115,64 @@ def get_job_gpu_req(job_id):
     return 0
 
 
+def get_job_resources(job_id):
+    """
+    Get comprehensive resource information for a job (CPU, Memory, GPU).
+    Returns a formatted string like "4C/16G/2G" (4 CPUs, 16GB RAM, 2 GPUs)
+    """
+    output = run_command(["scontrol", "show", "job", str(job_id)])
+    if not output:
+        return "N/A"
+    
+    # Parse CPUs
+    cpus_match = re.search(r"NumCPUs=(\d+)", output)
+    cpus = int(cpus_match.group(1)) if cpus_match else 0
+    
+    # Parse Memory (MinMemoryNode or MinMemoryCPU)
+    mem_match = re.search(r"MinMemoryNode=(\d+)([KMGT]?)", output)
+    if not mem_match:
+        mem_match = re.search(r"MinMemoryCPU=(\d+)([KMGT]?)", output)
+    
+    if mem_match:
+        mem_value = int(mem_match.group(1))
+        mem_unit = mem_match.group(2) if mem_match.group(2) else 'M'
+        
+        # Convert to GB for display
+        if mem_unit == 'K':
+            mem_gb = mem_value / (1024 * 1024)
+        elif mem_unit == 'M' or mem_unit == '':
+            mem_gb = mem_value / 1024
+        elif mem_unit == 'G':
+            mem_gb = mem_value
+        elif mem_unit == 'T':
+            mem_gb = mem_value * 1024
+        else:
+            mem_gb = 0
+        
+        # Format memory nicely
+        if mem_gb >= 1:
+            mem_str = f"{int(mem_gb)}G"
+        else:
+            mem_str = f"{int(mem_value)}M"
+    else:
+        mem_str = "0"
+    
+    # Parse GPUs
+    gpu_count = get_job_gpu_req(job_id)
+    
+    # Build compact resource string
+    parts = []
+    if cpus > 0:
+        parts.append(f"{cpus}C")
+    if mem_str != "0":
+        parts.append(mem_str)
+    if gpu_count > 0:
+        parts.append(f"{gpu_count}G")
+    
+    return "/".join(parts) if parts else "N/A"
+
+
+
 def get_user_gpu_running(user):
     """Calculate total GPUs currently running for a user."""
     # Get all running job IDs for the user
@@ -408,8 +466,8 @@ def show_squeue():
         print("No jobs in the queue.")
         return
 
-    # Define table headers - added "Remaining" column
-    titles = ["JobID", "Partition", "Name", "User", "State", "Time", "Remaining", "Nodes", "NodeList"]
+    # Define table headers - added "Remaining" and "Resources" columns
+    titles = ["JobID", "Partition", "Name", "User", "State", "Time", "Remaining", "Resources", "Nodes", "NodeList"]
 
     # Parse each line and build rows for the table
     rows = []
@@ -437,6 +495,9 @@ def show_squeue():
             remaining_time = format_time_remaining(remaining_mins)
         else:
             remaining_time = "N/A"
+        
+        # Get resource information (CPU/Memory/GPU)
+        resources = get_job_resources(job_id)
 
         # Highlight jobs belonging to the current user or user's group
         mygroup = (username == user or username in gr_mem)
@@ -460,7 +521,7 @@ def show_squeue():
             state = colored(state, 'cyan', attrs=['bold'])
 
         # Add the row to the table
-        row = [job_id, partition, job_name, username, state, run_time, remaining_time, node_count, nodelist]
+        row = [job_id, partition, job_name, username, state, run_time, remaining_time, resources, node_count, nodelist]
         rows.append(row)
 
     # Create and print the table
