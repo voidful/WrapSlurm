@@ -151,6 +151,7 @@ def parse_node_data(data):
         "GPUAlloc": gpu_alloc,
         "GPUTot": gpu_total,
         "GPUDetails": ", ".join(gpu_available_details) if gpu_available_details else "",
+        "GPUAllocByType": gpu_alloc_by_type,  # {gpu_type: alloc_count}
     }
 
 
@@ -305,19 +306,17 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
         else:
             gpu_info = "N/A"
         
-        # Build GPU slot visualization with job IDs
+        # Build GPU slot visualization using node's GPU allocation by type
         gpu_slots = []
+        gpu_alloc_by_type = node.get("GPUAllocByType", {})
         
-        if show_job_ids and node_name in job_mapping:
-            # Get jobs running on this node
-            jobs = job_mapping[node_name]
-            
-            # Assign GPU type abbreviations to GPU slots
+        if gpu_alloc_by_type:
+            # Build slot assignments from allocated GPU types
             slot_assignments = []
-            for job_id, gpu_type, gpu_count in jobs:
+            for gpu_type, count in gpu_alloc_by_type.items():
                 # Use first 4 characters of GPU type
                 gpu_abbrev = gpu_type[:4] if len(gpu_type) >= 4 else gpu_type
-                for _ in range(gpu_count):
+                for _ in range(count):
                     slot_assignments.append(gpu_abbrev)
             
             # Fill GPU slots
@@ -332,7 +331,7 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
                     # No GPU slot
                     gpu_slots.append("")
         else:
-            # Fallback to simple # visualization if no job mapping
+            # Fallback to simple # visualization if no GPU type info
             used = min(gpu_alloc, gpu_total)
             for i in range(max_slots):
                 if i < used:
