@@ -131,7 +131,9 @@ def parse_node_data(data):
         alloc_count = gpu_alloc_by_type.get(gpu_type, 0)
         available_count = total_count - alloc_count
         if available_count > 0:
-            gpu_available_details.append(f"{gpu_type}={available_count}")
+            # Truncate GPU type name to max 10 characters
+            gpu_type_short = gpu_type[:10] if len(gpu_type) > 10 else gpu_type
+            gpu_available_details.append(f"{gpu_type_short}={available_count}")
 
     # Extract state
     state_match = re.search(r"State=(\S+)", data)
@@ -145,8 +147,8 @@ def parse_node_data(data):
         "NodeName": node_name,
         "State": state,
         "Partitions": partitions,
-        "CPUs": f"{cpu_alloc} Alloc ({cpu_usage_percentage:.1f}%) / {cpu_total} Total",
-        "Memory": f"{alloc_memory // 1024} GB Used / {real_memory // 1024} GB ({memory_usage_percentage:.1f}%)",
+        "CPUs": f"{cpu_alloc} ({cpu_usage_percentage:.1f}%) / {cpu_total}",
+        "Memory": f"{alloc_memory // 1024} GB ({memory_usage_percentage:.1f}%) / {real_memory // 1024} GB",
         "CPUAlloc": cpu_alloc,
         "CPUTot": cpu_total,
         "CPULoad": cpu_load,

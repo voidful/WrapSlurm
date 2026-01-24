@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="WrapSlurm",
-    version="0.1.8",
+    version="0.1.9",
     description="A utility for managing SLURM jobs and nodes with enhanced display features.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
