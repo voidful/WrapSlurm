@@ -101,22 +101,24 @@ def parse_node_data(data):
         for gpu_type, count in gpu_type_matches:
             gpu_alloc_by_type[gpu_type] = int(count)
 
-    # Also try Gres field for total GPUs if CfgTRES didn't have them
-    if gpu_total == 0:
-        gres_match = re.search(r"Gres=(\S+)", data)
-        if gres_match:
-            gres = gres_match.group(1)
-            # Parse gpu:TYPE:COUNT format (e.g., gpu:3090:4)
-            gres_type_matches = re.findall(r"gpu:([a-zA-Z0-9]+):(\d+)", gres)
-            for gpu_type, count in gres_type_matches:
+    # Always try Gres field for GPU types (it usually has type info like gpu:3090:4)
+    gres_match = re.search(r"Gres=(\S+)", data)
+    if gres_match:
+        gres = gres_match.group(1)
+        # Parse gpu:TYPE:COUNT format (e.g., gpu:3090:4)
+        gres_type_matches = re.findall(r"gpu:([a-zA-Z0-9]+):(\d+)", gres)
+        for gpu_type, count in gres_type_matches:
+            # Only set if not already parsed from CfgTRES
+            if gpu_type not in gpu_total_by_type:
                 gpu_total_by_type[gpu_type] = int(count)
-                gpu_total += int(count)
-            
-            # Fallback: gpu:COUNT format
             if gpu_total == 0:
-                m = re.search(r"gpu[^:]*:(\d+)", gres)
-                if m:
-                    gpu_total = int(m.group(1))
+                gpu_total += int(count)
+        
+        # Fallback: gpu:COUNT format (no type specified)
+        if gpu_total == 0:
+            m = re.search(r"gpu[^:]*:(\d+)", gres)
+            if m:
+                gpu_total = int(m.group(1))
 
     if gpu_alloc == 0:
         gres_used_match = re.search(r"GresUsed=\S*?gpu:(\d+)", data)
