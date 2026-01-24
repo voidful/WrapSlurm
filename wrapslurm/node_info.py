@@ -71,15 +71,23 @@ def parse_node_data(data):
     # Extract GPU details
     gpu_total = 0
     gpu_alloc = 0
-    gpu_details = []  # Store detailed GPU allocation info
+    gpu_total_by_type = {}  # {gpu_type: total_count}
+    gpu_alloc_by_type = {}  # {gpu_type: alloc_count}
 
+    # Parse total GPU configuration from CfgTRES
     cfg_tres_match = re.search(r"CfgTRES=([^\n]*)", data)
     if cfg_tres_match:
         cfg = cfg_tres_match.group(1)
         m = re.search(r"gres/gpu=(\d+)", cfg)
         if m:
             gpu_total = int(m.group(1))
+        
+        # Extract GPU types and their total counts (e.g., gres/gpu:3090=2)
+        gpu_type_matches = re.findall(r"gres/gpu:([a-zA-Z0-9]+)=(\d+)", cfg)
+        for gpu_type, count in gpu_type_matches:
+            gpu_total_by_type[gpu_type] = int(count)
 
+    # Parse allocated GPUs from AllocTRES
     alloc_tres_match = re.search(r"AllocTRES=([^\n]*)", data)
     if alloc_tres_match:
         alloc = alloc_tres_match.group(1)
@@ -88,20 +96,40 @@ def parse_node_data(data):
         if m:
             gpu_alloc = int(m.group(1))
         
-        # Extract specific GPU types and their counts (e.g., gres/gpu:3090=2)
+        # Extract specific GPU types and their allocated counts (e.g., gres/gpu:3090=2)
         gpu_type_matches = re.findall(r"gres/gpu:([a-zA-Z0-9]+)=(\d+)", alloc)
         for gpu_type, count in gpu_type_matches:
-            gpu_details.append(f"{gpu_type}={count}")
+            gpu_alloc_by_type[gpu_type] = int(count)
 
+    # Also try Gres field for total GPUs if CfgTRES didn't have them
     if gpu_total == 0:
-        gres_match = re.search(r"Gres=\S*?gpu[^:]*:(\d+)", data)
+        gres_match = re.search(r"Gres=(\S+)", data)
         if gres_match:
-            gpu_total = int(gres_match.group(1))
+            gres = gres_match.group(1)
+            # Parse gpu:TYPE:COUNT format (e.g., gpu:3090:4)
+            gres_type_matches = re.findall(r"gpu:([a-zA-Z0-9]+):(\d+)", gres)
+            for gpu_type, count in gres_type_matches:
+                gpu_total_by_type[gpu_type] = int(count)
+                gpu_total += int(count)
+            
+            # Fallback: gpu:COUNT format
+            if gpu_total == 0:
+                m = re.search(r"gpu[^:]*:(\d+)", gres)
+                if m:
+                    gpu_total = int(m.group(1))
 
     if gpu_alloc == 0:
         gres_used_match = re.search(r"GresUsed=\S*?gpu:(\d+)", data)
         if gres_used_match:
             gpu_alloc = int(gres_used_match.group(1))
+
+    # Calculate AVAILABLE GPUs by type (total - allocated)
+    gpu_available_details = []
+    for gpu_type, total_count in gpu_total_by_type.items():
+        alloc_count = gpu_alloc_by_type.get(gpu_type, 0)
+        available_count = total_count - alloc_count
+        if available_count > 0:
+            gpu_available_details.append(f"{gpu_type}={available_count}")
 
     # Extract state
     state_match = re.search(r"State=(\S+)", data)
@@ -122,14 +150,15 @@ def parse_node_data(data):
         "CPULoad": cpu_load,
         "GPUAlloc": gpu_alloc,
         "GPUTot": gpu_total,
-        "GPUDetails": ", ".join(gpu_details) if gpu_details else "",
+        "GPUDetails": ", ".join(gpu_available_details) if gpu_available_details else "",
     }
+
 
 
 def get_job_gpu_mapping():
     """
     Get mapping of jobs to nodes and their GPU allocations.
-    Returns a dict: {node_name: [(job_id, gpu_count), ...]}
+    Returns a dict: {node_name: [(job_id, gpu_type, gpu_count), ...]}
     """
     try:
         # Query squeue for job ID, node list, and GRES (GPU) allocation
@@ -159,11 +188,21 @@ def get_job_gpu_mapping():
         node_list = parts[1].strip()
         gres = parts[2].strip()
         
-        # Parse GPU count from GRES (e.g., "gpu:2" or "gres/gpu=2")
+        # Parse GPU type and count from GRES
+        # Formats: "gpu:3090:2", "gpu:2", "gres/gpu:3090=2", "gres/gpu=2"
         gpu_count = 0
-        gpu_match = re.search(r'gpu[:\=](\d+)', gres)
-        if gpu_match:
-            gpu_count = int(gpu_match.group(1))
+        gpu_type = "gpu"  # Default type if not specified
+        
+        # Try to match "gpu:TYPE:COUNT" format (e.g., "gpu:3090:2")
+        gpu_type_match = re.search(r'gpu:([a-zA-Z0-9]+):(\d+)', gres)
+        if gpu_type_match:
+            gpu_type = gpu_type_match.group(1)
+            gpu_count = int(gpu_type_match.group(2))
+        else:
+            # Try to match "gpu:COUNT" format (e.g., "gpu:2")
+            gpu_match = re.search(r'gpu[:\=](\d+)', gres)
+            if gpu_match:
+                gpu_count = int(gpu_match.group(1))
         
         # If no GPU allocation found, skip this job
         if gpu_count == 0:
@@ -204,7 +243,7 @@ def get_job_gpu_mapping():
             
             if node not in job_mapping:
                 job_mapping[node] = []
-            job_mapping[node].append((job_id, node_gpu_count))
+            job_mapping[node].append((job_id, gpu_type, node_gpu_count))
     
     return job_mapping
 
@@ -273,16 +312,18 @@ def display_nodes(nodes, slots=8, show_job_ids=True):
             # Get jobs running on this node
             jobs = job_mapping[node_name]
             
-            # Assign job IDs to GPU slots
+            # Assign GPU type abbreviations to GPU slots
             slot_assignments = []
-            for job_id, gpu_count in jobs:
+            for job_id, gpu_type, gpu_count in jobs:
+                # Use first 4 characters of GPU type
+                gpu_abbrev = gpu_type[:4] if len(gpu_type) >= 4 else gpu_type
                 for _ in range(gpu_count):
-                    slot_assignments.append(str(job_id))
+                    slot_assignments.append(gpu_abbrev)
             
             # Fill GPU slots
             for i in range(max_slots):
                 if i < len(slot_assignments):
-                    # Show job ID in this slot
+                    # Show GPU type abbreviation in this slot
                     gpu_slots.append(slot_assignments[i])
                 elif i < gpu_total:
                     # Available but unused GPU
@@ -340,7 +381,7 @@ def show_job_detail(job_id):
     # Find which nodes this job is running on
     nodes_with_job = []
     for node_name, jobs in job_mapping.items():
-        for jid, gpu_count in jobs:
+        for jid, gpu_type, gpu_count in jobs:
             if str(jid) == str(job_id):
                 nodes_with_job.append((node_name, gpu_count))
     
