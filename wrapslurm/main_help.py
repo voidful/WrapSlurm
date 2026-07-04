@@ -8,7 +8,7 @@ def main():
         ("wr", "Run/Submit jobs (Smart wrapper for sbatch)", "wr [script] [flags]"),
         ("wl", "Log monitor (Tail latest job log)", "wl [flags]"),
         ("wk", "Kill/Cancel jobs (Smart wrapper for scancel)", "wk [job_id] [flags]"),
-        ("wq", "Queue view (Prettified squeue)", "wq"),
+        ("wq", "Queue view (Prettified squeue)", "wq [--gpu|--cpu|--split] [job_id]"),
         ("wi", "Info/Nodes view (sinfo wrapper)", "wi"),
         ("ws", "Show this help message", "ws")
     ]

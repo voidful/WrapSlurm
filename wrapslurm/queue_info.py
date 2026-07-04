@@ -99,31 +99,99 @@ def run_command(cmd, shell=False):
         return ""
 
 
+def _gpu_count_in_tres(tres):
+    """
+    Return the GPU count encoded in a single TRES value (the right-hand side of
+    ReqTRES=/AllocTRES=/TresPer*=). Prefers the generic aggregate
+    ('gres/gpu=N' or 'gres/gpu:N'); otherwise sums typed entries such as
+    'gres/gpu:a100=4,gres/gpu:v100=2'. Returns 0 when no GPUs are present.
+    """
+    if not tres:
+        return 0
+    # Generic aggregate total: 'gres/gpu=N' (ReqTRES/AllocTRES) or
+    # 'gres/gpu:N' (TresPer* per-unit form, no GPU type).
+    m = re.search(r"gres/gpu[=:](\d+)", tres)
+    if m:
+        return int(m.group(1))
+    # Typed entries: 'gres/gpu:<type>=N' or 'gres/gpu:<type>:N' — sum all types.
+    typed = re.findall(r"gres/gpu:[a-zA-Z][a-zA-Z0-9]*[=:](\d+)", tres)
+    if typed:
+        return sum(int(x) for x in typed)
+    return 0
+
+
+def parse_gpu_count_from_scontrol(output):
+    """
+    Extract the requested/allocated GPU count from `scontrol show job` output.
+
+    SLURM records GPUs in several places depending on how the job was
+    submitted, so they are checked in order of specificity:
+      - AllocTRES / ReqTRES:  ...,gres/gpu=N,...   (aggregate total)
+      - TresPerNode:   gres/gpu[:type]:N  (per node   -> x NumNodes)
+      - TresPerTask:   gres/gpu[:type]:N  (per task   -> x NumTasks)
+      - TresPerSocket: gres/gpu[:type]:N  (per socket -> counted as-is)
+      - TresPerJob:    gres/gpu[:type]:N  (whole job)
+      - Gres:          gpu[:type]:N       (per node   -> x NumNodes)
+    Returns 0 when the job requests no GPUs.
+    """
+    if not output:
+        return 0
+
+    # 1. Aggregate totals: AllocTRES (running jobs) then ReqTRES (pending jobs).
+    for field in ("AllocTRES", "ReqTRES"):
+        m = re.search(field + r"=(\S+)", output)
+        if m:
+            gpus = _gpu_count_in_tres(m.group(1))
+            if gpus:
+                return gpus
+
+    def _int_field(pattern, default=1):
+        m = re.search(pattern, output)
+        return int(m.group(1)) if m else default
+
+    num_nodes = _int_field(r"NumNodes=(\d+)")
+    num_tasks = _int_field(r"NumTasks=(\d+)")
+
+    # 2. Per-node / per-task / per-socket / per-job specifications
+    #    (e.g. --gpus-per-node / --gpus-per-task, which never land in ReqTRES).
+    for field, multiplier in (
+        ("TresPerNode", num_nodes),
+        ("TresPerTask", num_tasks),
+        ("TresPerSocket", 1),
+        ("TresPerJob", 1),
+    ):
+        m = re.search(field + r"=(\S+)", output)
+        if m:
+            gpus = _gpu_count_in_tres(m.group(1))
+            if gpus:
+                return gpus * multiplier
+
+    # 3. Gres=gpu[:type]:N (reported per node in some SLURM versions).
+    m = re.search(r"(?:^|\s)Gres=(\S+)", output)
+    if m and m.group(1) not in ("(null)", "(none)"):
+        gm = re.search(r"gpu(?::[a-zA-Z0-9]+)?:(\d+)", m.group(1))
+        if gm:
+            return int(gm.group(1)) * num_nodes
+
+    return 0
+
+
 def get_job_gpu_req(job_id):
     """Parse scontrol to find GPU requirements for a job."""
     output = run_command(["scontrol", "show", "job", str(job_id)])
-    # Look for ReqTRES=...gres/gpu=N...
-    req_tres = re.search(r"ReqTRES=.*gres/gpu(?::[a-zA-Z0-9]+)?=(\d+)", output)
-    if req_tres:
-        return int(req_tres.group(1))
-    
-    # Look for TresPerJob=...gres/gpu:N...
-    tres_per_job = re.search(r"TresPerJob=.*gres/gpu(?::[a-zA-Z0-9]+)?:(\d+)", output)
-    if tres_per_job:
-        return int(tres_per_job.group(1))
-        
-    return 0
+    return parse_gpu_count_from_scontrol(output)
 
 
 def get_job_resources(job_id):
     """
     Get comprehensive resource information for a job (CPU, Memory, GPU).
-    Returns a formatted string like "4C/16G/2G" (4 CPUs, 16GB RAM, 2 GPUs)
+    Returns a tuple (resource_string, gpu_count), e.g. ("4C/16G/2G", 2)
+    for 4 CPUs, 16GB RAM and 2 GPUs. gpu_count is 0 for CPU-only jobs.
     """
     output = run_command(["scontrol", "show", "job", str(job_id)])
     if not output:
-        return "N/A"
-    
+        return "N/A", 0
+
     # Parse CPUs
     cpus_match = re.search(r"NumCPUs=(\d+)", output)
     cpus = int(cpus_match.group(1)) if cpus_match else 0
@@ -157,9 +225,9 @@ def get_job_resources(job_id):
     else:
         mem_str = "0"
     
-    # Parse GPUs
-    gpu_count = get_job_gpu_req(job_id)
-    
+    # Parse GPUs (reuse the scontrol output already fetched above)
+    gpu_count = parse_gpu_count_from_scontrol(output)
+
     # Build compact resource string
     parts = []
     if cpus > 0:
@@ -168,8 +236,9 @@ def get_job_resources(job_id):
         parts.append(mem_str)
     if gpu_count > 0:
         parts.append(f"{gpu_count}G")
-    
-    return "/".join(parts) if parts else "N/A"
+
+    resource_str = "/".join(parts) if parts else "N/A"
+    return resource_str, gpu_count
 
 
 
@@ -430,10 +499,27 @@ def analyze_job(job_id):
     print(colored("=" * 20, "cyan"))
 
 
-def show_squeue():
+def _render_job_table(titles, rows, title=None):
+    """Render a list of pre-built rows as an AsciiTable."""
+    table = AsciiTable([titles] + rows)
+    for i in range(len(titles)):
+        table.justify_columns[i] = 'left'
+    table.justify_columns[0] = 'right'  # Right-align JobID for better readability
+    if title:
+        table.title = title
+    print(table.table)
+
+
+def show_squeue(filter_mode="all"):
     """
     Display the output of the `squeue` command in a prettier, tabular format.
     Includes truncating overly long job names and highlighting user jobs.
+
+    filter_mode controls how GPU vs. CPU-only jobs are shown:
+        "all"   - one combined table (default)
+        "gpu"   - only jobs that request one or more GPUs
+        "cpu"   - only jobs that request no GPUs
+        "split" - two separate tables: GPU jobs and CPU-only jobs
     """
     # Get the current user's information and group memberships
     try:
@@ -469,8 +555,12 @@ def show_squeue():
     # Define table headers - added "Remaining" and "Resources" columns
     titles = ["JobID", "Partition", "Name", "User", "State", "Time", "Remaining", "Resources", "Nodes", "NodeList"]
 
-    # Parse each line and build rows for the table
-    rows = []
+    # Parse each line and build rows for the table.
+    # all_rows preserves squeue's original ordering; gpu_rows / cpu_rows split
+    # jobs by whether they request GPUs.
+    all_rows = []
+    gpu_rows = []
+    cpu_rows = []
     for line in lines:
         parts = line.split('|')
         if len(parts) < 9:
@@ -485,19 +575,19 @@ def show_squeue():
         time_limit = parts[6].strip()
         node_count = parts[7].strip()
         nodelist = parts[8].strip()
-        
+
         # Calculate remaining time
         elapsed_mins = parse_slurm_time(run_time)
         limit_mins = parse_slurm_time(time_limit)
-        
+
         if elapsed_mins is not None and limit_mins is not None:
             remaining_mins = limit_mins - elapsed_mins
             remaining_time = format_time_remaining(remaining_mins)
         else:
             remaining_time = "N/A"
-        
-        # Get resource information (CPU/Memory/GPU)
-        resources = get_job_resources(job_id)
+
+        # Get resource information (CPU/Memory/GPU) and the GPU count for filtering
+        resources, gpu_count = get_job_resources(job_id)
 
         # Highlight jobs belonging to the current user or user's group
         mygroup = (username == user or username in gr_mem)
@@ -520,16 +610,39 @@ def show_squeue():
         else:  # Other states
             state = colored(state, 'cyan', attrs=['bold'])
 
-        # Add the row to the table
+        # Add the row to the appropriate bucket(s)
         row = [job_id, partition, job_name, username, state, run_time, remaining_time, resources, node_count, nodelist]
-        rows.append(row)
+        all_rows.append(row)
+        if gpu_count > 0:
+            gpu_rows.append(row)
+        else:
+            cpu_rows.append(row)
 
-    # Create and print the table
-    table = AsciiTable([titles] + rows)
-    for i in range(len(titles)):
-        table.justify_columns[i] = 'left'
-    table.justify_columns[0] = 'right'  # Right-align JobID for better readability
-    print(table.table)
+    # Render according to the requested filter mode
+    if filter_mode == "split":
+        gpu_title = colored(f" GPU Jobs ({len(gpu_rows)}) ", "magenta", attrs=["bold"])
+        cpu_title = colored(f" CPU-only Jobs ({len(cpu_rows)}) ", "cyan", attrs=["bold"])
+        if gpu_rows:
+            _render_job_table(titles, gpu_rows, title=gpu_title)
+        else:
+            print(colored("No GPU jobs in the queue.", "magenta"))
+        print()
+        if cpu_rows:
+            _render_job_table(titles, cpu_rows, title=cpu_title)
+        else:
+            print(colored("No CPU-only jobs in the queue.", "cyan"))
+    elif filter_mode == "gpu":
+        if gpu_rows:
+            _render_job_table(titles, gpu_rows, title=colored(f" GPU Jobs ({len(gpu_rows)}) ", "magenta", attrs=["bold"]))
+        else:
+            print(colored("No GPU jobs in the queue.", "magenta"))
+    elif filter_mode == "cpu":
+        if cpu_rows:
+            _render_job_table(titles, cpu_rows, title=colored(f" CPU-only Jobs ({len(cpu_rows)}) ", "cyan", attrs=["bold"]))
+        else:
+            print(colored("No CPU-only jobs in the queue.", "cyan"))
+    else:  # "all"
+        _render_job_table(titles, all_rows)
 
     # Automatically analyze the current user's pending jobs
     pending_jobs = get_user_pending_jobs(user)
@@ -543,15 +656,50 @@ def show_squeue():
             analyze_pending_job_brief(job_id, user)
 
 
+def print_help():
+    """Print usage information for the `wq` command."""
+    print(colored("wq - Prettified SLURM queue view", "green", attrs=["bold"]))
+    print("-" * 50)
+    print("Usage:")
+    print("  wq                 Show all jobs in one combined table")
+    print("  wq --gpu   | -g    Show only jobs that request GPUs")
+    print("  wq --cpu   | -c    Show only CPU-only jobs (no GPUs)")
+    print("       (aliases: --no-gpu)")
+    print("  wq --split | -s    Show GPU jobs and CPU-only jobs in separate tables")
+    print("  wq <job_id>        Analyze a specific job in detail")
+    print("  wq --help  | -h    Show this help message")
+
+
 def main():
     """
     Main entry point for the `wqueue` command.
     """
     try:
-        if len(sys.argv) > 1 and sys.argv[1] not in ["-h", "--help"]:
-            analyze_job(sys.argv[1])
-        else:
+        args = sys.argv[1:]
+        if not args:
             show_squeue()
+            return
+
+        first = args[0]
+        filter_flags = {
+            "-g": "gpu", "--gpu": "gpu",
+            "-c": "cpu", "--cpu": "cpu", "--no-gpu": "cpu",
+            "-s": "split", "--split": "split",
+        }
+
+        if first in ("-h", "--help"):
+            print_help()
+        elif first in filter_flags:
+            if len(args) > 1:
+                print(colored(f"Note: ignoring extra argument(s): {' '.join(args[1:])}", "yellow"))
+            show_squeue(filter_mode=filter_flags[first])
+        elif first.startswith("-"):
+            print(colored(f"Unknown option: {first}", "red"))
+            print()
+            print_help()
+        else:
+            # Treat the first argument as a job ID to analyze
+            analyze_job(first)
     except KeyboardInterrupt:
         pass
     except RuntimeError as e:

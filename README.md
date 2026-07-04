@@ -172,6 +172,17 @@ Display the job queue in a table format:
 wqueue
 ```
 
+#### Filter or split GPU vs. CPU-only jobs:
+
+```bash
+wq --gpu     # only jobs that request one or more GPUs
+wq --cpu     # only CPU-only jobs (no GPUs)   (alias: --no-gpu)
+wq --split   # GPU jobs and CPU-only jobs shown in two separate tables
+```
+
+Short flags `-g` (`--gpu`), `-c` (`--cpu`) and `-s` (`--split`) are also
+supported. Run `wq --help` for the full list of options.
+
 ---
 
 ### 5. **Query Node Resources (`winfo`)**
